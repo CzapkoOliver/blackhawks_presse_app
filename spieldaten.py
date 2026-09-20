@@ -142,17 +142,30 @@ def parse_spielbericht(text: str) -> dict:
             tore_abschnitt_match.group(1),
             re.MULTILINE,
         )
-        if tore_zeilen:
-            drittel_tore: dict[int, list[int]] = {}
-            letzter_heim, letzter_gast = 0, 0
-            for drittel_text, heim_stand_text, gast_stand_text in tore_zeilen:
-                drittel = int(drittel_text)
-                heim_stand, gast_stand = int(heim_stand_text), int(gast_stand_text)
-                heim_tore, gast_tore = drittel_tore.setdefault(drittel, [0, 0])
-                drittel_tore[drittel][0] = heim_tore + (heim_stand - letzter_heim)
-                drittel_tore[drittel][1] = gast_tore + (gast_stand - letzter_gast)
-                letzter_heim, letzter_gast = heim_stand, gast_stand
-            daten["torfolge_pro_drittel"] = drittel_tore
+        # Wichtig: Ein Drittel, in dem KEIN Tor gefallen ist (0:0), taucht in
+        # der TORE-Tabelle gar nicht auf - es gibt schlicht keine Zeile dafuer.
+        # Deshalb reicht es nicht, nur die Drittel mit tatsaechlichen Treffern
+        # in "drittel_tore" einzutragen: sonst fehlt ein torloses Drittel in
+        # der Anzeige komplett, statt korrekt als 0:0 zu erscheinen.
+        drittel_tore: dict[int, list[int]] = {}
+        letzter_heim, letzter_gast = 0, 0
+        for drittel_text, heim_stand_text, gast_stand_text in tore_zeilen:
+            drittel = int(drittel_text)
+            heim_stand, gast_stand = int(heim_stand_text), int(gast_stand_text)
+            heim_tore, gast_tore = drittel_tore.setdefault(drittel, [0, 0])
+            drittel_tore[drittel][0] = heim_tore + (heim_stand - letzter_heim)
+            drittel_tore[drittel][1] = gast_tore + (gast_stand - letzter_gast)
+            letzter_heim, letzter_gast = heim_stand, gast_stand
+
+        # Regulaer werden immer 3 Drittel gespielt. Kam es zur Verlaengerung,
+        # gibt es mindestens ein Tor mit Drittel-Nummer 4 (oder hoeher) - dann
+        # wird bis dorthin aufgefuellt. Jedes torlose Drittel dazwischen wird
+        # explizit mit 0:0 ergaenzt, statt einfach zu fehlen.
+        hoechstes_drittel = max([3] + [int(d) for d, _, _ in tore_zeilen])
+        for drittel in range(1, hoechstes_drittel + 1):
+            drittel_tore.setdefault(drittel, [0, 0])
+
+        daten["torfolge_pro_drittel"] = drittel_tore
 
     return daten
 
