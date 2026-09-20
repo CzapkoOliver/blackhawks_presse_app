@@ -1,1 +1,9 @@
-
+# Vereinsfarben der EHF Passau Black Hawks: Schwarz, Rot, Weiss.
+# Falls ihr einen exakten offiziellen Rot-Ton habt (z.B. aus dem Logo),
+# einfach den Hex-Code bei "primaryColor" austauschen.
+[theme]
+primaryColor = "#C8102E"
+backgroundColor = "#0D0D0D"
+secondaryBackgroundColor = "#1A1A1A"
+textColor = "#FFFFFF"
+font = "sans serif"
