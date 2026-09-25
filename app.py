@@ -17,6 +17,7 @@ Hochladen zu GitHub mit hochgeladen werden).
 Start ueber das Terminal mit: streamlit run app.py
 """
 
+import time
 from datetime import datetime
 
 import streamlit as st
@@ -37,6 +38,13 @@ PRESSESPRECHER_TITEL = "Stadion- und Pressesprecher"
 # Live-Uebersetzer aus dem Blickfeld verschwindet (und umgekehrt). Bei Bedarf
 # hier einfach die Zahl anpassen (z.B. kleiner auf einem kleineren Bildschirm).
 SPALTEN_HOEHE = 820
+
+# Direkt nach Spielende dauert es auf DEB LIVE manchmal noch ein paar Minuten,
+# bis die Seite den Spielstatus tatsaechlich auf "beendet" umstellt. Deshalb
+# hier nicht sofort aufgeben, sondern automatisch ein paar Mal erneut
+# versuchen, bevor eine Fehlermeldung kommt.
+MAX_VERSUCHE = 5
+WARTEZEIT_SEKUNDEN = 60
 
 
 @st.cache_resource
@@ -61,25 +69,107 @@ _playwright_browser_sicherstellen()
 st.set_page_config(page_title="Black Hawks Presse-Vorbereitung", page_icon="🏒", layout="wide")
 
 # ---------------------------------------------------------------------------
-# Kopfbereich: Vereinslogo-Emoji, Titel, fest hinterlegter Name/Funktion
+# Globales Erscheinungsbild: eigene Schriftarten (Space Grotesk fuer
+# Ueberschriften/Zahlen, Inter fuer Fliesstext) sowie kleine Bausteine
+# (Karten, Label) fuer die Stat-Kacheln weiter unten. Bewusst KEINE Eingriffe
+# in Streamlits interne DOM-Struktur (z.B. Container-Raender) - das ist
+# versionsabhaengig und bricht leicht. Nur eigene, selbst erzeugte HTML-
+# Bloecke werden gestylt.
+# ---------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap');
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    .bh-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; }
+    .bh-label {
+        font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600;
+        letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+    }
+    .bh-card { background: #1e1e1e; border-radius: 12px; padding: 14px 16px; }
+    .bh-card-grid { display: grid; gap: 12px; margin-bottom: 4px; }
+    .bh-section-titel {
+        display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif;
+        font-weight: 700; font-size: 16px; color: #ffffff; margin: 4px 0 10px 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Kleine, wiederverwendbare Inline-Icons (statt Emoji) fuer die
+# Abschnittsueberschriften - passend zum vorher abgestimmten Mockup.
+BH_ICON_TRIKOT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 3 3 5-8"/></svg>'
+BH_ICON_MIKRO = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>'
+BH_ICON_PFEIFE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>'
+BH_ICON_TRAINER = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
+BH_ICON_KALENDER = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>'
+BH_ICON_SPRECHBLASE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+
+
+def bh_abschnitt_titel(icon: str, text: str) -> None:
+    """Rendert eine kleine Abschnittsueberschrift mit Icon statt Emoji."""
+    st.markdown(f'<div class="bh-section-titel">{icon}<span>{text}</span></div>', unsafe_allow_html=True)
+
+
+def bh_karten_zeile(karten: list[tuple[str, str]], spalten: int = 2) -> None:
+    """
+    Rendert eine Reihe kleiner, abgerundeter Stat-Kacheln (Label + grosser
+    Wert) statt der Standard-st.metric-Kacheln - optisch angelehnt an das
+    zuvor abgestimmte Mockup.
+    """
+    zellen = "".join(
+        f'<div class="bh-card"><div class="bh-label">{label}</div>'
+        f'<div class="bh-value" style="font-size:24px; color:#ffffff; margin-top:4px;">{wert}</div></div>'
+        for label, wert in karten
+    )
+    st.markdown(
+        f'<div class="bh-card-grid" style="grid-template-columns: repeat({spalten}, minmax(0, 1fr));">{zellen}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Kopfbereich: Vereinslogo, Titel, fest hinterlegter Name/Funktion als Chip
 # ---------------------------------------------------------------------------
 st.markdown(
     """
     <div style="
-        padding: 18px 20px;
-        border-radius: 10px;
+        display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;
+        padding: 16px 22px;
+        border-radius: 14px;
         background: linear-gradient(135deg, #000000 0%, #1a1a1a 100%);
-        border: 1px solid #C8102E;
-        margin-bottom: 18px;
+        border-bottom: 2px solid #C8102E;
+        margin-bottom: 22px;
     ">
-        <div style="font-size: 26px; font-weight: 700; color: #ffffff; line-height: 1.3;">
-            🏒 EHF Passau Black Hawks
+        <div style="display:flex; align-items:center; gap:14px;">
+            <div style="width:40px; height:40px; border-radius:10px; background:#C8102E;
+                        display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 21l7-14 3 6h6l-9 8z"/><circle cx="19" cy="5" r="2"/>
+                </svg>
+            </div>
+            <div>
+                <div class="bh-value" style="font-size:20px; color:#ffffff; line-height:1.15;">
+                    EHF PASSAU BLACK HAWKS
+                </div>
+                <div class="bh-label" style="color:#C8102E; margin-top:2px;">Presse-Vorbereitung</div>
+            </div>
         </div>
-        <div style="font-size: 15px; color: #C8102E; font-weight: 600; margin-top: 2px;">
-            Presse-Vorbereitung
-        </div>
-        <div style="font-size: 13px; color: #bbbbbb; margin-top: 10px;">
-            Erstellt fuer <b style="color:#ffffff;">Oliver Czapko</b> &middot; Stadion- und Pressesprecher
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 16px; border-radius:999px;
+                    background:#1a1a1a; border:1px solid #2e2e2e;">
+            <div style="width:28px; height:28px; border-radius:50%; background:#2a2a2a;
+                        display:flex; align-items:center; justify-content:center;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#f5f5f5" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                </svg>
+            </div>
+            <div>
+                <div style="font-size:13px; font-weight:600; color:#ffffff;">Oliver Czapko</div>
+                <div style="font-size:11px; color:#9a9a9a;">Stadion- &amp; Pressesprecher</div>
+            </div>
         </div>
     </div>
     """,
@@ -97,13 +187,13 @@ st.markdown(
 spalte_haupt, spalte_uebersetzer = st.columns([3, 2], gap="large")
 
 with spalte_uebersetzer:
-    st.markdown("### 🎙️ Live-Übersetzer")
+    bh_abschnitt_titel(BH_ICON_MIKRO, "Live-Übersetzer")
     with st.container(height=SPALTEN_HOEHE, border=True):
         st.caption("Läuft während der ganzen Pressekonferenz weiter, unabhängig von den Fragen links.")
         live_uebersetzer.render()
 
 with spalte_haupt:
-    st.markdown("### 📋 Spieldaten & Pressefragen")
+    bh_abschnitt_titel(BH_ICON_TRIKOT, "Spieldaten & Pressefragen")
     with st.container(height=SPALTEN_HOEHE, border=True):
         st.caption("Link zum DEB-LIVE-Spielbericht einfuegen und auf 'Daten laden' klicken.")
 
@@ -119,16 +209,53 @@ with spalte_haupt:
                 st.warning("Bitte zuerst einen Link zum Spielbericht einfuegen.")
                 st.stop()
 
-            with st.spinner("Lade Spieldaten von DEB LIVE ..."):
-                roher_text = spieldaten.hole_sichtbaren_text(url)
-                daten = spieldaten.parse_spielbericht(roher_text)
+            # Direkt nach Spielende zeigt DEB LIVE das Spiel manchmal noch kurz
+            # als "laeuft" an, bevor die Seite auf "beendet" umschaltet. Deshalb
+            # hier mehrmals mit Wartezeit dazwischen versuchen, bis entweder das
+            # Spiel als "beendet" markiert ist ODER die Versuche aufgebraucht
+            # sind. Sind Teamnamen/Ergebnis schon lesbar, aber das Spiel laeuft
+            # noch, wird NICHT einfach ein Fehler angezeigt: stattdessen wird
+            # nach dem letzten Versuch der aktuelle Zwischenstand ausgewertet
+            # und deutlich als "noch nicht offiziell beendet" gekennzeichnet.
+            daten = None
+            for versuch in range(1, MAX_VERSUCHE + 1):
+                with st.spinner(f"Lade Spieldaten von DEB LIVE ... (Versuch {versuch}/{MAX_VERSUCHE})"):
+                    roher_text = spieldaten.hole_sichtbaren_text(url)
+                    daten = spieldaten.parse_spielbericht(roher_text)
+
+                vollstaendig_lesbar = daten["heimteam"] and daten["gastteam"] and daten["endergebnis"]
+
+                if vollstaendig_lesbar and daten["ist_beendet"]:
+                    break  # offiziell beendet - fertig, kein weiterer Versuch noetig
+
+                if versuch < MAX_VERSUCHE:
+                    if vollstaendig_lesbar:
+                        warte_text = (
+                            f"Spiel laeuft laut DEB LIVE noch (Status: {daten['status']}) - "
+                            f"warte {WARTEZEIT_SEKUNDEN} Sekunden auf das offizielle Ende ..."
+                        )
+                    else:
+                        warte_text = (
+                            f"Seite konnte noch nicht ausgelesen werden - "
+                            f"warte {WARTEZEIT_SEKUNDEN} Sekunden und versuche es erneut ..."
+                        )
+                    with st.spinner(warte_text):
+                        time.sleep(WARTEZEIT_SEKUNDEN)
 
             if not daten["heimteam"] or not daten["gastteam"] or not daten["endergebnis"]:
                 st.error(
-                    "Die Seite konnte nicht richtig ausgelesen werden. "
-                    "Bitte pruefen, ob der Link stimmt und das Spiel bereits beendet ist."
+                    f"Die Seite konnte auch nach {MAX_VERSUCHE} Versuchen nicht richtig ausgelesen "
+                    "werden. Bitte pruefen, ob der Link stimmt."
                 )
                 st.stop()
+
+            if not daten["ist_beendet"]:
+                st.warning(
+                    f"⚠️ Achtung: Laut DEB LIVE ist dieses Spiel noch nicht offiziell beendet "
+                    f"(aktueller Status: {daten['status'] or 'unbekannt'}). Angezeigt wird der "
+                    "aktuelle Zwischenstand - Zahlen koennen sich bis zum echten Spielende noch "
+                    "aendern. Danach am besten nochmal auf 'Daten laden' klicken."
+                )
 
             gegner = daten["gastteam"] if daten["heimteam"] == UNSER_TEAM else daten["heimteam"]
 
@@ -139,6 +266,25 @@ with spalte_haupt:
             heute = datetime.now()
             naechste_unser_team = spielplan.naechste_spiele(alle_spiele, UNSER_TEAM, heute)
             naechste_gegner = spielplan.naechste_spiele(alle_spiele, gegner, heute)
+
+            # Diagnose-Hinweis: Falls der Spielplan insgesamt nicht (vollstaendig)
+            # ausgelesen werden konnte, wuerden bei JEDER Mannschaft die naechsten
+            # Spiele fehlen - das faellt so leichter auf, statt einfach
+            # stillschweigend eine leere Liste anzuzeigen.
+            if not alle_spiele:
+                st.caption(
+                    "⚠️ Hinweis: Der Spielplan konnte diesmal nicht ausgelesen werden "
+                    "(0 Spiele erkannt) - deshalb fehlen unten die naechsten Spiele. "
+                    "Das kann an der Seite selbst liegen (z.B. langsam geladen). "
+                    "Bitte oben nochmal auf 'Daten laden' klicken."
+                )
+            elif not naechste_unser_team and not naechste_gegner:
+                st.caption(
+                    f"ℹ️ Spielplan wurde ausgelesen ({len(alle_spiele)} Spiele insgesamt), "
+                    "aber fuer keines der beiden Teams wurden kommende Spiele gefunden. "
+                    "Moeglich, dass die Teamnamen auf der Spielplan-Seite anders "
+                    "geschrieben sind (z.B. mit/ohne Umlaut)."
+                )
 
             heim_info = trainer_lookup.hole_nationalitaet_und_sprache(daten["trainer_heim"] or "")
             gast_info = trainer_lookup.hole_nationalitaet_und_sprache(daten["trainer_gast"] or "")
@@ -189,38 +335,47 @@ with spalte_haupt:
                 st.markdown("<div style='margin-top:18px;'></div>", unsafe_allow_html=True)
 
                 # ---- Zeile 1: Schuesse ----
-                st.markdown("**Schuesse**")
-                spalte1, spalte2 = st.columns(2)
-                spalte1.metric(heim, daten["schuesse_heim"] if daten["schuesse_heim"] is not None else "-")
-                spalte2.metric(gast, daten["schuesse_gast"] if daten["schuesse_gast"] is not None else "-")
+                st.markdown('<div class="bh-label" style="margin-bottom:8px;">Schuesse</div>', unsafe_allow_html=True)
+                bh_karten_zeile(
+                    [
+                        (heim, daten["schuesse_heim"] if daten["schuesse_heim"] is not None else "-"),
+                        (gast, daten["schuesse_gast"] if daten["schuesse_gast"] is not None else "-"),
+                    ],
+                    spalten=2,
+                )
 
                 # ---- Zeile 2: Strafminuten ----
-                st.markdown("**Strafminuten**")
-                spalte3, spalte4 = st.columns(2)
-                spalte3.metric(heim, daten["strafminuten_heim"] if daten["strafminuten_heim"] is not None else "-")
-                spalte4.metric(gast, daten["strafminuten_gast"] if daten["strafminuten_gast"] is not None else "-")
+                st.markdown('<div class="bh-label" style="margin:14px 0 8px;">Strafminuten</div>', unsafe_allow_html=True)
+                bh_karten_zeile(
+                    [
+                        (heim, daten["strafminuten_heim"] if daten["strafminuten_heim"] is not None else "-"),
+                        (gast, daten["strafminuten_gast"] if daten["strafminuten_gast"] is not None else "-"),
+                    ],
+                    spalten=2,
+                )
 
                 # ---- Zeile 3: Drittelergebnisse ----
                 if daten["torfolge_pro_drittel"]:
-                    st.markdown("**Drittelergebnisse**")
-                    drittel_spalten = st.columns(len(daten["torfolge_pro_drittel"]))
-                    for spalte, drittel in zip(drittel_spalten, sorted(daten["torfolge_pro_drittel"])):
+                    st.markdown('<div class="bh-label" style="margin:14px 0 8px;">Drittelergebnisse</div>', unsafe_allow_html=True)
+                    drittel_karten = []
+                    for drittel in sorted(daten["torfolge_pro_drittel"]):
                         heim_tore, gast_tore = daten["torfolge_pro_drittel"][drittel]
                         label = f"{drittel}. Drittel" if drittel <= 3 else "Verlaengerung"
-                        spalte.metric(label, f"{heim_tore}:{gast_tore}")
+                        drittel_karten.append((label, f"{heim_tore}:{gast_tore}"))
+                    bh_karten_zeile(drittel_karten, spalten=len(drittel_karten))
 
             # ---- Offizielle & Trainer ----
             spalte_links, spalte_rechts = st.columns(2)
 
             with spalte_links:
                 with st.container(border=True):
-                    st.markdown("**🧑‍⚖️ Offizielle**")
+                    bh_abschnitt_titel(BH_ICON_PFEIFE, "Offizielle")
                     st.write(f"Schiedsrichter: {daten['schiedsrichter'] or 'unbekannt'}")
                     st.write(f"Linienrichter: {daten['linienrichter'] or 'unbekannt'}")
 
             with spalte_rechts:
                 with st.container(border=True):
-                    st.markdown("**🧑‍💼 Trainer**")
+                    bh_abschnitt_titel(BH_ICON_TRAINER, "Trainer")
                     st.write(
                         f"**{heim}:** {daten['trainer_heim'] or 'unbekannt'} "
                         f"({heim_info['nationalitaet']}, spricht {heim_info['sprache']})"
@@ -237,7 +392,7 @@ with spalte_haupt:
 
             # ---- Naechste Spiele ----
             with st.container(border=True):
-                st.markdown("**📅 Naechste Spiele**")
+                bh_abschnitt_titel(BH_ICON_KALENDER, "Nächste Spiele")
                 spalte_a, spalte_b = st.columns(2)
                 with spalte_a:
                     st.write(f"**{UNSER_TEAM}**")
@@ -250,7 +405,7 @@ with spalte_haupt:
 
             # ---- Pressefragen ----
             st.divider()
-            st.markdown("### 🎤 Pressekonferenz-Fragen")
+            bh_abschnitt_titel(BH_ICON_SPRECHBLASE, "Pressekonferenz-Fragen")
             if st.button("Pressefragen generieren", type="primary"):
                 with st.spinner("Claude analysiert das Spiel und formuliert Fragen ..."):
                     fragen = fragen_generator.generiere_pressefragen(
