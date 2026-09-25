@@ -178,7 +178,32 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
         daten["status"] = "Spiel beendet"
         daten["ist_beendet"] = True
     else:
-        kopf_match_laeuft = re.search(
+        # DEB LIVE zeigt es manchmal so an: Das Spiel ist in Wirklichkeit
+        # bereits vorbei (Endergebnis + komplette Statistik-Tabelle wie
+        # Schuesse, PIM, Drittelergebnisse sind schon vollstaendig da),
+        # aber die Statistiker haben den offiziellen Status noch nicht auf
+        # "Spiel beendet" gesetzt - stattdessen steht dort nur das generische
+        # Wort "Spiel" (ohne "beendet"). Ein wirklich noch laufendes Spiel
+        # zeigt dagegen NIE nur "Spiel" allein an, sondern immer einen
+        # laufzeit-/drittelbezogenen Hinweis (z.B. "1. Drittel" oder
+        # "Spielzeit: 22:10", siehe die Faelle weiter unten) - deshalb kann
+        # dieser Fall hier sicher als (praktisch) beendet behandelt werden,
+        # statt die App bis zum Abbruch nach allen Versuchen warten zu lassen.
+        kopf_match_generisch_beendet = re.search(
+            r"(\d+)\s*:\s*(\d+)\n([^\n]+)\nSpiel\n([^\n]+)", text
+        )
+        if kopf_match_generisch_beendet:
+            daten["endergebnis"] = f"{kopf_match_generisch_beendet.group(1)}:{kopf_match_generisch_beendet.group(2)}"
+            daten["heimteam"] = kopf_match_generisch_beendet.group(3).strip()
+            daten["gastteam"] = kopf_match_generisch_beendet.group(4).strip()
+            daten["status"] = "Spiel beendet (Status auf DEB LIVE noch nicht aktualisiert)"
+            daten["ist_beendet"] = True
+
+        # Die beiden folgenden Erkennungsschritte (laufendes Spiel) werden nur
+        # noch gebraucht, wenn oben WEDER "Spiel beendet" NOCH das generische
+        # "Spiel" (= praktisch beendet) gefunden wurde - sonst wuerden sie die
+        # bereits korrekt erkannten Daten wieder ueberschreiben/verwerfen.
+        kopf_match_laeuft = None if kopf_match_generisch_beendet else re.search(
             r"(\d+)\s*:\s*(\d+)\n([^\n]+)\n"
             r"(\d\.\s*Drittel|Drittelpause|Pause|Verl(?:ä|ae)ngerung|"
             r"Nachspielzeit|Penaltyschie(?:ß|ss)en|Shootout|"
@@ -187,7 +212,9 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
             text,
             re.IGNORECASE,
         )
-        if kopf_match_laeuft:
+        if kopf_match_generisch_beendet:
+            pass
+        elif kopf_match_laeuft:
             daten["endergebnis"] = f"{kopf_match_laeuft.group(1)}:{kopf_match_laeuft.group(2)}"
             daten["heimteam"] = kopf_match_laeuft.group(3).strip()
             daten["status"] = kopf_match_laeuft.group(4).strip()
