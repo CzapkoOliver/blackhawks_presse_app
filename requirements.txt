@@ -2,3 +2,4 @@ streamlit
 playwright
 anthropic
 python-dotenv
+python-docx
