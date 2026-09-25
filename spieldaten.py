@@ -13,6 +13,8 @@ Trainer und die Team-Gesamtstatistik (u.a. Schuesse aufs Tor).
 """
 
 import re
+from collections import Counter
+
 from playwright.sync_api import sync_playwright
 
 # Beispiel-URL des Spiels SC Riessersee - EHF Passau Black Hawks (19.09.2026)
@@ -22,10 +24,21 @@ SPIELBERICHT_URL = (
 )
 
 
-def hole_sichtbaren_text(url: str) -> str:
+def hole_sichtbaren_text(url: str) -> tuple[str, str]:
     """
-    Oeffnet die Spielbericht-Seite, wechselt aktiv auf den Reiter
-    "Spielbericht" und gibt den kompletten sichtbaren Text zurueck.
+    Oeffnet die Spielbericht-Seite und liest den sichtbaren Text von ZWEI
+    Reitern aus, im selben Browser-Durchlauf:
+    - "Spielverlauf" (der Reiter, der beim Aufrufen der Seite standardmaessig
+      aktiv ist) - hier stehen ALLE Spielereignisse chronologisch mit
+      vollstaendigem Vor- und Nachnamen (Tore, Strafen, Torhueter-Wechsel).
+      Wird bisher nur genutzt, um die Spielernamen zuverlaessiger/vollstaendiger
+      zu erkennen (siehe nachbericht_generator.py) - alle anderen Felder
+      werden unveraendert weiter aus "Spielbericht" gelesen, damit sich am
+      bisherigen, bereits funktionierenden Verhalten nichts aendert.
+    - "Spielbericht" - hier stehen Besucherzahl, Schiedsrichter, Trainer und
+      die Team-Gesamtstatistik (u.a. Schuesse aufs Tor), wie bisher.
+
+    Rueckgabe: (text_spielverlauf, text_spielbericht)
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -39,6 +52,16 @@ def hole_sichtbaren_text(url: str) -> str:
             page.wait_for_timeout(1000)
         except Exception:
             pass
+
+        # Der Reiter "Spielverlauf" ist beim Laden der Seite bereits aktiv -
+        # deshalb hier einfach direkt den sichtbaren Text lesen, BEVOR auf
+        # "Spielbericht" gewechselt wird. Schlaegt das Auslesen aus
+        # irgendeinem Grund fehl, wird einfach ein leerer Text verwendet -
+        # das darf die bisherige Auswertung (Spielbericht) nicht gefaehrden.
+        try:
+            text_spielverlauf = page.inner_text("body")
+        except Exception:
+            text_spielverlauf = ""
 
         reiter_geklickt = False
         versuche = [
@@ -58,21 +81,66 @@ def hole_sichtbaren_text(url: str) -> str:
         print(f"[Debug] Reiter 'Spielbericht' angeklickt: {reiter_geklickt}")
         page.wait_for_timeout(2500)
 
-        text = page.inner_text("body")
+        text_spielbericht = page.inner_text("body")
         browser.close()
-        return text
+        return text_spielverlauf, text_spielbericht
 
 
-def parse_spielbericht(text: str) -> dict:
+# Grossbuchstaben-Bereich bewusst weiter gefasst als nur A-Z/ÄÖÜ (deckt z.B.
+# auch "Á" in "KOVÁCS" oder "Č"/"Ř" in tschechischen Namen ab), da im
+# Eishockey haeufig internationale Spielernamen vorkommen.
+_SPIELER_NAME_MUSTER = re.compile(
+    r"#\d+\s+([A-ZÀ-ÖØ-ÞČŘŠŽ][A-ZÀ-ÖØ-ÞČŘŠŽ'\- ]*[A-ZÀ-ÖØ-ÞČŘŠŽ])\s+"
+    r"([A-ZÀ-ÖØ-ÞČŘŠŽ][A-Za-zÀ-ÖØ-öø-ÿčřšž'\-]*)"
+)
+
+
+def _baue_spieler_namen_verzeichnis(*texte: str) -> dict[str, str]:
+    """
+    Durchsucht die uebergebenen Seitentexte (typischerweise "Spielverlauf"
+    UND "Spielbericht") nach JEDER Erwaehnung eines Spielers im Format
+    "#Nummer NACHNAME Vorname" (z.B. "#22 HOBBS Grady") und baut daraus ein
+    Nachschlage-Verzeichnis {Nachname: Vorname}.
+
+    Der Reiter "Spielverlauf" listet dabei besonders viele Ereignisse
+    (Tore, Strafen, Torhueter-Wechsel usw.), wodurch fast jeder Spieler
+    mehrfach mit vollem Namen auftaucht - das macht die Namenserkennung
+    robuster als sich nur auf die (kuerzere) Torschuetzen-Liste aus dem
+    Spielbericht zu verlassen. Kommt ein Nachname mehrfach mit leicht
+    unterschiedlicher Schreibweise vor, gewinnt die haeufigste Variante.
+    """
+    treffer_pro_nachname: dict[str, Counter] = {}
+    for text in texte:
+        if not text:
+            continue
+        for nachname_roh, vorname in _SPIELER_NAME_MUSTER.findall(text):
+            nachname = nachname_roh.strip().title()
+            treffer_pro_nachname.setdefault(nachname, Counter())[vorname.strip()] += 1
+
+    return {
+        nachname: zaehler.most_common(1)[0][0]
+        for nachname, zaehler in treffer_pro_nachname.items()
+    }
+
+
+def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
     """
     Sucht im rohen Seitentext des "Spielbericht"-Reiters nach den benoetigten
     Werten und gibt sie als Dictionary zurueck. Werte, die nicht gefunden
     werden, bleiben None.
+
+    text_spielverlauf ist optional: wird der Text des "Spielverlauf"-Reiters
+    mituebergeben, verbessert das nur die Erkennung der Spielernamen (siehe
+    "spieler_namen" unten und nachbericht_generator.py) - alle anderen
+    Felder werden unveraendert wie bisher ausschliesslich aus "text"
+    (Spielbericht) gelesen.
     """
     daten = {
         "heimteam": None,
         "gastteam": None,
         "endergebnis": None,
+        "status": None,
+        "ist_beendet": False,
         "schuesse_heim": None,
         "schuesse_gast": None,
         "zuschauer": None,
@@ -83,17 +151,47 @@ def parse_spielbericht(text: str) -> dict:
         "strafminuten_heim": None,
         "strafminuten_gast": None,
         "torfolge_pro_drittel": None,
+        "tore_liste": None,
+        "spieler_namen": None,
     }
+
+    spieler_namen = _baue_spieler_namen_verzeichnis(text, text_spielverlauf)
+    if spieler_namen:
+        daten["spieler_namen"] = spieler_namen
 
     # Endergebnis + beide Teamnamen stehen direkt hintereinander, z.B.:
     # "4 : 2\nSC Riessersee\nSpiel beendet\nEHF Passau Black Hawks"
-    kopf_match = re.search(
+    #
+    # Zuerst wird GENAU auf "Spiel beendet" geprueft (wie urspruenglich) -
+    # das ist eindeutig und zuverlaessig. Ein voellig frei formuliertes
+    # Muster (irgendein Text als "Status") hat sich in der Praxis an einer
+    # falschen Stelle im Seitentext festgehakt und dadurch auch beendete
+    # Spiele nicht mehr erkannt - deshalb NUR bekannte, typische Status-
+    # Woerter fuer ein laufendes Spiel als Alternative zulassen.
+    kopf_match_beendet = re.search(
         r"(\d+)\s*:\s*(\d+)\n([^\n]+)\nSpiel beendet\n([^\n]+)", text
     )
-    if kopf_match:
-        daten["endergebnis"] = f"{kopf_match.group(1)}:{kopf_match.group(2)}"
-        daten["heimteam"] = kopf_match.group(3).strip()
-        daten["gastteam"] = kopf_match.group(4).strip()
+    if kopf_match_beendet:
+        daten["endergebnis"] = f"{kopf_match_beendet.group(1)}:{kopf_match_beendet.group(2)}"
+        daten["heimteam"] = kopf_match_beendet.group(3).strip()
+        daten["gastteam"] = kopf_match_beendet.group(4).strip()
+        daten["status"] = "Spiel beendet"
+        daten["ist_beendet"] = True
+    else:
+        kopf_match_laeuft = re.search(
+            r"(\d+)\s*:\s*(\d+)\n([^\n]+)\n"
+            r"(\d\.\s*Drittel|Drittelpause|Pause|Verl(?:ä|ae)ngerung|"
+            r"Nachspielzeit|Penaltyschie(?:ß|ss)en|Shootout)"
+            r"\n([^\n]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if kopf_match_laeuft:
+            daten["endergebnis"] = f"{kopf_match_laeuft.group(1)}:{kopf_match_laeuft.group(2)}"
+            daten["heimteam"] = kopf_match_laeuft.group(3).strip()
+            daten["status"] = kopf_match_laeuft.group(4).strip()
+            daten["gastteam"] = kopf_match_laeuft.group(5).strip()
+            daten["ist_beendet"] = False
 
     # Besucherzahl steht unter dem Label "Besucher" (nicht "Zuschauer"!)
     besucher_match = re.search(r"Besucher\s*\n\s*([\d.]+)", text)
@@ -137,11 +235,64 @@ def parse_spielbericht(text: str) -> dict:
     # erkennen, auch wenn das Endergebnis am Ende knapp aussieht).
     tore_abschnitt_match = re.search(r"\bTORE\b\n(.*?)\n\s*STRAFEN\b", text, re.DOTALL)
     if tore_abschnitt_match:
+        tore_abschnitt_text = tore_abschnitt_match.group(1)
         tore_zeilen = re.findall(
             r"^(\d)\s+\d{1,2}:\d{2}\s+(\d+):(\d+)\b",
-            tore_abschnitt_match.group(1),
+            tore_abschnitt_text,
             re.MULTILINE,
         )
+
+        # Fuer den spaeteren Nachbericht (siehe nachbericht_generator.py) wird
+        # zusaetzlich zur reinen Drittel-Zusammenfassung auch die einzelne
+        # Torschuetzen-Zeile aufbewahrt (z.B. Name/Vorlage), damit der
+        # Nachbericht eine echte Torchronologie enthalten kann. Der Torschuetzen-
+        # Text kann je nach Seitenaufbau auf derselben Zeile ODER den
+        # Folgezeilen stehen - deshalb wird hier alles zwischen dem Beginn
+        # einer Tor-Zeile und dem Beginn der naechsten Tor-Zeile eingesammelt,
+        # statt nur die eine Zeile selbst auszuwerten.
+        tore_zeilen_positionen = list(
+            re.finditer(r"^(\d)\s+(\d{1,2}:\d{2})\s+(\d+):(\d+)\b", tore_abschnitt_text, re.MULTILINE)
+        )
+        tore_liste = []
+        for i, treffer in enumerate(tore_zeilen_positionen):
+            start_naechste = (
+                tore_zeilen_positionen[i + 1].start()
+                if i + 1 < len(tore_zeilen_positionen)
+                else len(tore_abschnitt_text)
+            )
+            rest_text = tore_abschnitt_text[treffer.end():start_naechste].strip()
+            rest_text = " ".join(zeile.strip() for zeile in rest_text.splitlines() if zeile.strip())
+
+            # Zusaetzlich zum rohen Text wird der Torschuetzen-Name sauber
+            # herausgeloest (z.B. aus "(EQ) #22 HOBBS Grady (#79 MÖSSINGER / ...)"
+            # wird "Grady Hobbs"). Grund: Wird nur der rohe Text an Claude
+            # uebergeben, kommt es beim freien Formulieren des Nachberichts
+            # gelegentlich zu vertauschten/verwechselten Vornamen (z.B. "Grady"
+            # wird zu "Grant"). Ein bereits sauber vorbereiteter Name senkt
+            # dieses Risiko deutlich, siehe zusaetzlich die Namens-Korrektur
+            # in nachbericht_generator.py als weiteres Sicherheitsnetz.
+            torschuetze = None
+            schuetze_match = _SPIELER_NAME_MUSTER.search(rest_text)
+            if schuetze_match:
+                nachname = schuetze_match.group(1).strip().title()
+                # Bevorzugt den Vornamen aus dem umfassenderen Namens-
+                # verzeichnis (mehrere Erwaehnungen ueber Spielverlauf +
+                # Spielbericht) - nur falls dort nichts hinterlegt ist, wird
+                # auf den direkt hier gefundenen Vornamen zurueckgegriffen.
+                vorname = spieler_namen.get(nachname) or schuetze_match.group(2).strip()
+                torschuetze = f"{vorname} {nachname}"
+
+            tore_liste.append(
+                {
+                    "drittel": int(treffer.group(1)),
+                    "zeit": treffer.group(2),
+                    "stand": f"{treffer.group(3)}:{treffer.group(4)}",
+                    "info": rest_text,
+                    "torschuetze": torschuetze,
+                }
+            )
+        if tore_liste:
+            daten["tore_liste"] = tore_liste
         # Wichtig: Ein Drittel, in dem KEIN Tor gefallen ist (0:0), taucht in
         # der TORE-Tabelle gar nicht auf - es gibt schlicht keine Zeile dafuer.
         # Deshalb reicht es nicht, nur die Drittel mit tatsaechlichen Treffern
@@ -171,8 +322,8 @@ def parse_spielbericht(text: str) -> dict:
 
 
 if __name__ == "__main__":
-    roher_text = hole_sichtbaren_text(SPIELBERICHT_URL)
-    ergebnis = parse_spielbericht(roher_text)
+    roher_text_spielverlauf, roher_text = hole_sichtbaren_text(SPIELBERICHT_URL)
+    ergebnis = parse_spielbericht(roher_text, roher_text_spielverlauf)
 
     print("----- AUSGEWERTETE SPIELDATEN -----")
     for feld, wert in ergebnis.items():

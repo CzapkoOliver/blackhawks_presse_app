@@ -9,6 +9,8 @@ Fuehrt alle Bausteine zusammen:
 - trainer_lookup.py   -> Nationalitaet/Sprache der Trainer
 - fragen_generator.py -> Pressekonferenz-Fragen per Claude API (zweisprachig bei Bedarf)
 - live_uebersetzer.py -> Live-Untertitel Englisch -> Deutsch waehrend der Pressekonferenz
+- nachbericht_generator.py -> Druckfertiger Nachbericht (Headline, Text, O-Ton, Statistik)
+- nachbericht_docx.py      -> Export des Nachberichts als Word-Datei (.docx)
 
 Die Vereinsfarben (Schwarz, Rot, Weiss) werden ueber .streamlit/config.toml
 gesetzt - diese Datei muss im selben Ordner wie app.py liegen (bzw. beim
@@ -27,6 +29,8 @@ import spielplan
 import trainer_lookup
 import fragen_generator
 import live_uebersetzer
+import nachbericht_generator
+import nachbericht_docx
 
 UNSER_TEAM = "EHF Passau Black Hawks"
 PRESSESPRECHER_NAME = "Oliver Czapko"
@@ -105,6 +109,7 @@ BH_ICON_PFEIFE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" st
 BH_ICON_TRAINER = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
 BH_ICON_KALENDER = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>'
 BH_ICON_SPRECHBLASE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+BH_ICON_ZEITUNG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C8102E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4H8a2 2 0 0 0-2 2v14a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2V9h4"/><path d="M18 14h-8M18 10h-8M12 18h-6"/></svg>'
 
 
 def bh_abschnitt_titel(icon: str, text: str) -> None:
@@ -220,8 +225,8 @@ with spalte_haupt:
             daten = None
             for versuch in range(1, MAX_VERSUCHE + 1):
                 with st.spinner(f"Lade Spieldaten von DEB LIVE ... (Versuch {versuch}/{MAX_VERSUCHE})"):
-                    roher_text = spieldaten.hole_sichtbaren_text(url)
-                    daten = spieldaten.parse_spielbericht(roher_text)
+                    roher_text_spielverlauf, roher_text = spieldaten.hole_sichtbaren_text(url)
+                    daten = spieldaten.parse_spielbericht(roher_text, roher_text_spielverlauf)
 
                 vollstaendig_lesbar = daten["heimteam"] and daten["gastteam"] and daten["endergebnis"]
 
@@ -416,6 +421,76 @@ with spalte_haupt:
             if "fragen" in st.session_state:
                 with st.container(border=True):
                     st.markdown(st.session_state["fragen"])
+
+            # ---- Nachbericht ----
+            st.divider()
+            bh_abschnitt_titel(BH_ICON_ZEITUNG, "Nachbericht für die Presse")
+            st.caption(
+                "Erstellt aus den obigen Spieldaten einen druckfertigen Nachbericht "
+                "(Headline, Text, O-Ton, Statistik). Die Live-Übersetzung läuft "
+                "ausschließlich im Browser - die App weiß deshalb nicht automatisch, "
+                "wer gerade spricht. Bitte die gewünschten, bereits übersetzten Zitate "
+                "unten manuell aus dem Live-Übersetzer-Verlauf (links kopieren, siehe "
+                "Textfeld 'Transkript als Text') in das passende Feld einfügen. Leer "
+                "gelassene Felder werden im O-Ton-Abschnitt als noch zu ergänzen "
+                "markiert - Claude erfindet keine Aussagen."
+            )
+
+            sperrfrist = st.text_input(
+                "Sperrfrist (falls keine, einfach 'keine' stehen lassen)",
+                value="keine",
+                key="nachbericht_sperrfrist",
+            )
+
+            trainer_heim_name = daten["trainer_heim"] or f"Trainer {heim}"
+            trainer_gast_name = daten["trainer_gast"] or f"Trainer {gast}"
+
+            spalte_zitat_heim, spalte_zitat_gast = st.columns(2)
+            with spalte_zitat_heim:
+                zitat_heim = st.text_area(
+                    f"Zitat {trainer_heim_name} ({heim})",
+                    placeholder="Wir müssen einfacheres Eishockey spielen.",
+                    height=100,
+                    key="nachbericht_zitat_heim",
+                )
+            with spalte_zitat_gast:
+                zitat_gast = st.text_area(
+                    f"Zitat {trainer_gast_name} ({gast})",
+                    placeholder="Wir haben zu viele individuelle Fehler gemacht.",
+                    height=100,
+                    key="nachbericht_zitat_gast",
+                )
+
+            # Aus den beiden benannten Feldern wird intern wieder der Zitate-Text
+            # im Format "Name: Zitat" je Zeile gebaut, den nachbericht_generator.py
+            # erwartet - so bleibt dort die Logik unveraendert und die Trainer-
+            # Namen muessen nicht ein zweites Mal von Hand eingetippt werden.
+            zitate_zeilen = []
+            if zitat_heim.strip():
+                zitate_zeilen.append(f"{trainer_heim_name}: {zitat_heim.strip()}")
+            if zitat_gast.strip():
+                zitate_zeilen.append(f"{trainer_gast_name}: {zitat_gast.strip()}")
+            zitate_text = "\n".join(zitate_zeilen)
+
+            if st.button("Nachbericht generieren", type="primary"):
+                with st.spinner("Claude schreibt den Nachbericht ..."):
+                    nachbericht = nachbericht_generator.generiere_nachbericht(
+                        daten, heim_info, gast_info, zitate_text, sperrfrist
+                    )
+                st.session_state["nachbericht"] = nachbericht
+
+            if "nachbericht" in st.session_state:
+                with st.container(border=True):
+                    st.markdown(st.session_state["nachbericht"])
+
+                docx_bytes = nachbericht_docx.nachbericht_zu_docx_bytes(st.session_state["nachbericht"])
+                dateiname = f"nachbericht_{heim}_{gast}.docx".replace(" ", "_")
+                st.download_button(
+                    "Nachbericht als Word-Datei (.docx) herunterladen",
+                    data=docx_bytes,
+                    file_name=dateiname,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
 
 # ---------------------------------------------------------------------------
 # Fusszeile
