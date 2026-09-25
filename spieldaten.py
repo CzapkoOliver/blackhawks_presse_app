@@ -181,7 +181,8 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
         kopf_match_laeuft = re.search(
             r"(\d+)\s*:\s*(\d+)\n([^\n]+)\n"
             r"(\d\.\s*Drittel|Drittelpause|Pause|Verl(?:ä|ae)ngerung|"
-            r"Nachspielzeit|Penaltyschie(?:ß|ss)en|Shootout)"
+            r"Nachspielzeit|Penaltyschie(?:ß|ss)en|Shootout|"
+            r"Spielzeit\s*:\s*\d{1,2}:\d{2})"
             r"\n([^\n]+)",
             text,
             re.IGNORECASE,
@@ -192,6 +193,70 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
             daten["status"] = kopf_match_laeuft.group(4).strip()
             daten["gastteam"] = kopf_match_laeuft.group(5).strip()
             daten["ist_beendet"] = False
+        else:
+            # Zweiter Versuch, bewusst SEHR tolerant: das obige Muster
+            # verlangt eine exakte Zeilenfolge "Ergebnis / Heimteam /
+            # EIN bekanntes Status-Wort / Gastteam". Waehrend eines
+            # laufenden Spiels kann der genaue Wortlaut des Status
+            # (z.B. "Spielzeit: 22:10") oder die Zeilenstruktur leicht
+            # abweichen - ohne direkten Zugriff auf die Live-Seite laesst
+            # sich das nicht vorab exakt vorhersagen. Deshalb hier NICHT
+            # auf einen bestimmten Status-Text angewiesen sein, sondern
+            # nur auf das eindeutig erkennbare Muster "Ergebnis, dann
+            # Teamname, dann (evtl.) eine Statuszeile, dann Teamname"
+            # in den Zeilen NACH dem Ergebnis.
+            for ergebnis_match in re.finditer(r"^\s*(\d+)\s*:\s*(\d+)\s*$", text, re.MULTILINE):
+                nachfolgende_zeilen = [
+                    zeile.strip()
+                    for zeile in text[ergebnis_match.end():].splitlines()[:6]
+                    if zeile.strip()
+                ]
+                if len(nachfolgende_zeilen) < 2:
+                    continue
+
+                heimteam_kandidat = nachfolgende_zeilen[0]
+                # Eine Zeile gilt als "Status" (statt als Teamname), wenn sie
+                # eine Uhrzeit-/Minutenangabe (z.B. "22:10") enthaelt oder
+                # eines der typischen Status-Woerter - so wird nicht auf
+                # exakten Wortlaut gepocht, sondern auf das MUSTER.
+                status_muster = re.compile(
+                    r"\d{1,2}\s*:\s*\d{2}|Drittel|Pause|Verl(?:ä|ae)ngerung|"
+                    r"Nachspielzeit|Penalty|Shootout|Halbzeit|beendet|laeuft|läuft",
+                    re.IGNORECASE,
+                )
+                status_kandidat = None
+                gastteam_kandidat = None
+                for folge_zeile in nachfolgende_zeilen[1:]:
+                    if status_muster.search(folge_zeile) and gastteam_kandidat is None:
+                        status_kandidat = folge_zeile
+                        continue
+                    if status_kandidat is not None:
+                        gastteam_kandidat = folge_zeile
+                        break
+
+                # Ein plausibler Teamname ist keine reine Zahl/Uhrzeit und
+                # nicht leer - einfache Absicherung gegen Fehltreffer. Wichtig:
+                # Es wird hier BEWUSST nur zugegriffen, wenn tatsaechlich eine
+                # erkennbare Statuszeile gefunden wurde (status_kandidat).
+                # Ohne das koennte sonst z.B. ein unbekannter Zwischentext
+                # faelschlich als Gastteam-Name uebernommen werden - dann
+                # lieber gar nichts erkennen (und die Diagnose-Anzeige in der
+                # App greifen lassen) als falsche Team-/Trainerdaten anzeigen.
+                def _wirkt_wie_teamname(wert: str) -> bool:
+                    return bool(wert) and not re.fullmatch(r"[\d:\s]+", wert)
+
+                if (
+                    status_kandidat is not None
+                    and _wirkt_wie_teamname(heimteam_kandidat)
+                    and gastteam_kandidat
+                    and _wirkt_wie_teamname(gastteam_kandidat)
+                ):
+                    daten["endergebnis"] = f"{ergebnis_match.group(1)}:{ergebnis_match.group(2)}"
+                    daten["heimteam"] = heimteam_kandidat
+                    daten["status"] = status_kandidat or "läuft (genauer Status unbekannt)"
+                    daten["gastteam"] = gastteam_kandidat
+                    daten["ist_beendet"] = False
+                    break
 
     # Besucherzahl steht unter dem Label "Besucher" (nicht "Zuschauer"!)
     besucher_match = re.search(r"Besucher\s*\n\s*([\d.]+)", text)

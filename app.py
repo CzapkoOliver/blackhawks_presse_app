@@ -48,7 +48,7 @@ SPALTEN_HOEHE = 820
 # hier nicht sofort aufgeben, sondern automatisch ein paar Mal erneut
 # versuchen, bevor eine Fehlermeldung kommt.
 MAX_VERSUCHE = 5
-WARTEZEIT_SEKUNDEN = 60
+WARTEZEIT_SEKUNDEN = 30
 
 
 @st.cache_resource
@@ -252,6 +252,16 @@ with spalte_haupt:
                     f"Die Seite konnte auch nach {MAX_VERSUCHE} Versuchen nicht richtig ausgelesen "
                     "werden. Bitte pruefen, ob der Link stimmt."
                 )
+                # Diagnose-Hilfe: den kompletten rohen Seitentext anzeigen, damit
+                # er bei Bedarf einfach kopiert und zur Fehlersuche weitergegeben
+                # werden kann - ohne dass dafuer lokal Python/das Terminal
+                # gebraucht wird (wichtig z.B. direkt am Spielfeldrand).
+                with st.expander("Rohtext der Seite anzeigen (zur Fehlersuche)"):
+                    st.text_area(
+                        "Kompletter ausgelesener Seitentext",
+                        value=roher_text,
+                        height=400,
+                    )
                 st.stop()
 
             if not daten["ist_beendet"]:
