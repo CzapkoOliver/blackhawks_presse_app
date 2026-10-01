@@ -82,6 +82,43 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str]:
         page.wait_for_timeout(2500)
 
         text_spielbericht = page.inner_text("body")
+
+        # Zusaetzlich: die Kaderliste ("FELDSPIELER"/"GOALIES"-Tabelle) BEIDER
+        # Mannschaften einsammeln - dort steht IMMER der volle, ausgeschriebene
+        # Vorname (z.B. "HOBBS Grady"), unabhaengig davon, ob die Torschuetzen-
+        # Liste selbst nur abgekuerzte Vornamen zeigt (z.B. "MACKINNON J.").
+        # Es wird jeweils nur eine Mannschaft auf einmal angezeigt, umschaltbar
+        # ueber kleine Buttons mit dem Team-Kuerzel (z.B. "EHF"/"HCT") - welche
+        # Kuerzel das im Einzelfall sind, ist vorab nicht bekannt. Deshalb
+        # werden hier einfach ALLE kurzen, komplett grossgeschriebenen Buttons
+        # auf der Seite der Reihe nach angeklickt und der danach sichtbare
+        # Text zusaetzlich eingesammelt. Faelschlich angeklickte, unbeteiligte
+        # Buttons schaden nicht - die Namenserkennung sucht ohnehin nur nach
+        # einem sehr spezifischen Muster (siehe _baue_spieler_namen_aus_kaderliste).
+        text_kaderlisten_teile = []
+        try:
+            alle_buttons = page.get_by_role("button")
+            anzahl_buttons = min(alle_buttons.count(), 40)
+            for i in range(anzahl_buttons):
+                try:
+                    knopf = alle_buttons.nth(i)
+                    knopf_text = knopf.inner_text(timeout=800).strip()
+                except Exception:
+                    continue
+                if not re.fullmatch(r"[A-ZÄÖÜ]{2,5}", knopf_text):
+                    continue
+                try:
+                    knopf.click(timeout=1500)
+                    page.wait_for_timeout(700)
+                    text_kaderlisten_teile.append(page.inner_text("body"))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        if text_kaderlisten_teile:
+            text_spielverlauf = text_spielverlauf + "\n" + "\n".join(text_kaderlisten_teile)
+
         browser.close()
         return text_spielverlauf, text_spielbericht
 
@@ -123,6 +160,65 @@ def _baue_spieler_namen_verzeichnis(*texte: str) -> dict[str, str]:
     }
 
 
+# Fuer die Kaderliste ("FELDSPIELER"/"GOALIES"-Tabelle, Spalten "#", "Spieler",
+# "Pos", "Land", ...): ein komplett grossgeschriebenes Wort (Nachname-Teil).
+_GROSSBUCHSTABEN_TOKEN = re.compile(r"^[A-ZÀ-ÖØ-ÞČŘŠŽ´`'\-]{2,}$")
+# Ein "normal" grossgeschriebenes Wort (erster Buchstabe gross, Rest nicht
+# komplett gross) - das ist der Vorname, z.B. "Tom" oder "Jan-Luka".
+_TITEL_TOKEN = re.compile(r"^[A-ZÀ-ÖØ-ÞČŘŠŽ][A-Za-zÀ-ÖØ-öø-ÿčřšž'\-]*$")
+
+
+def _baue_spieler_namen_aus_kaderliste(*texte: str) -> dict[str, str]:
+    """
+    Zweite, von "#Nummer"-Erwaehnungen UNABHAENGIGE Quelle fuer volle
+    Spielernamen: die Kaderliste/Boxscore-Tabelle, wie sie je Team auf der
+    Spielbericht-Seite zu sehen ist (Spalten "#", "Spieler", "Pos", "Land",
+    ...), z.B. eine Tabellenzeile wie "6  HORSCHEL Tom  LD  GER  1  0  1 ...".
+    Dort steht IMMER der volle, ausgeschriebene Vorname - unabhaengig davon,
+    ob die Torschuetzen-/Strafenliste selbst nur abgekuerzte Vornamen zeigt
+    (z.B. "MACKINNON J." statt "MACKINNON John").
+
+    Technik: der Text wird in einzelne Woerter zerlegt (unabhaengig davon, ob
+    die Tabellenzellen beim Auslesen durch Tabs, Leerzeichen oder Zeilen-
+    umbrueche getrennt sind), und es wird nach der charakteristischen
+    Reihenfolge "Rueckennummer (1-3 Ziffern), ein oder mehrere KOMPLETT
+    GROSSGESCHRIEBENE Woerter (Nachname), dann genau EIN normal
+    grossgeschriebenes Wort (Vorname)" gesucht. Dieses Muster ist spezifisch
+    genug, um nicht versehentlich an anderer Stelle der Seite (z.B. in einer
+    Tor- oder Strafenliste mit anderen Zahlen) zuzuschlagen.
+    """
+    treffer_pro_nachname: dict[str, Counter] = {}
+    for text in texte:
+        if not text:
+            continue
+        tokens = text.split()
+        i = 0
+        while i < len(tokens):
+            if tokens[i].isdigit() and 1 <= len(tokens[i]) <= 3:
+                j = i + 1
+                nachname_tokens = []
+                while j < len(tokens) and _GROSSBUCHSTABEN_TOKEN.match(tokens[j]):
+                    nachname_tokens.append(tokens[j])
+                    j += 1
+                if (
+                    nachname_tokens
+                    and j < len(tokens)
+                    and _TITEL_TOKEN.match(tokens[j])
+                    and not _GROSSBUCHSTABEN_TOKEN.match(tokens[j])
+                ):
+                    nachname = " ".join(nachname_tokens).title()
+                    vorname = tokens[j]
+                    treffer_pro_nachname.setdefault(nachname, Counter())[vorname] += 1
+                    i = j + 1
+                    continue
+            i += 1
+
+    return {
+        nachname: zaehler.most_common(1)[0][0]
+        for nachname, zaehler in treffer_pro_nachname.items()
+    }
+
+
 def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
     """
     Sucht im rohen Seitentext des "Spielbericht"-Reiters nach den benoetigten
@@ -155,7 +251,17 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
         "spieler_namen": None,
     }
 
-    spieler_namen = _baue_spieler_namen_verzeichnis(text, text_spielverlauf)
+    # Zwei unabhaengige Quellen fuer volle Spielernamen werden kombiniert:
+    # (1) "#Nummer NACHNAME Vorname"-Erwaehnungen (z.B. in der Torschuetzen-
+    #     liste) und (2) die Kaderliste/Boxscore-Tabelle je Team, die IMMER
+    #     den vollen Vornamen zeigt, selbst wenn (1) z.B. nur abgekuerzte
+    #     Vornamen liefert (siehe _baue_spieler_namen_aus_kaderliste oben).
+    # Bei einem Konflikt hat die Kaderliste Vorrang, da sie die zuverlaessigere,
+    # vollstaendigere Quelle ist.
+    spieler_namen = {
+        **_baue_spieler_namen_verzeichnis(text, text_spielverlauf),
+        **_baue_spieler_namen_aus_kaderliste(text, text_spielverlauf),
+    }
     if spieler_namen:
         daten["spieler_namen"] = spieler_namen
 

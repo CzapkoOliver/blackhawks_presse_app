@@ -110,6 +110,14 @@ def _korrigiere_torschuetzen_namen(text: str, spieldaten: dict) -> str:
 
     for nachname, korrekter_vorname in bekannte_namen.items():
         nachname_escaped = re.escape(nachname)
+        # WICHTIG: Claude uebernimmt Nachnamen haeufig genau so, wie sie in
+        # den Quelldaten standen - und die DEB-LIVE-Kaderliste/Torschuetzen-
+        # liste zeigt Nachnamen durchgehend GROSSGESCHRIEBEN (z.B. "MACKINNON"
+        # statt "Mackinnon", wie es im eigenen Namensverzeichnis hinterlegt
+        # ist). Ohne Gross-/Kleinschreibung zu ignorieren, wuerde die
+        # Korrektur solche Faelle schlicht nicht finden - deshalb ueberall
+        # re.IGNORECASE verwenden und die korrekte Schreibweise (nachname,
+        # korrekter_vorname) beim Ersetzen fest vorgeben.
 
         def _ersetzen(treffer: re.Match) -> str:
             geschriebener_vorname = treffer.group(1)
@@ -117,15 +125,25 @@ def _korrigiere_torschuetzen_namen(text: str, spieldaten: dict) -> str:
                 return f"{korrekter_vorname} {nachname}"
             return treffer.group(0)
 
+        # Fall 1: "Vorname Nachname" (uebliche Reihenfolge im Fliesstext) -
+        # wird nur ersetzt, wenn der geschriebene Vorname dem korrekten
+        # Vornamen aehnlich genug ist (Verwechslungs-Schutz, siehe oben).
         muster = rf"\b([A-ZÀ-Ö][A-Za-zÀ-ÖØ-öø-ÿ'\-]*)\s+{nachname_escaped}\b"
-        text = re.sub(muster, _ersetzen, text)
+        text = re.sub(muster, _ersetzen, text, flags=re.IGNORECASE)
 
-        # Zusaetzliches Muster: abgekuerzte Vornamen ("G. Hobbs", "L Mössinger")
-        # werden IMMER auf den vollen Namen ausgeschrieben, unabhaengig davon,
-        # ob der Anfangsbuchstabe zufaellig passt - der Nutzer moechte
-        # ausdruecklich ausgeschriebene Vornamen im Nachbericht sehen.
-        abkuerzung_muster = rf"\b[A-ZÀ-Ö]\.?\s+{nachname_escaped}\b"
-        text = re.sub(abkuerzung_muster, f"{korrekter_vorname} {nachname}", text)
+        # Fall 2: abgekuerzter Vorname VOR dem Nachnamen ("G. Hobbs") - wird
+        # IMMER auf den vollen Namen ausgeschrieben, unabhaengig davon, ob
+        # der Anfangsbuchstabe zufaellig passt - volle Vornamen sind Pflicht.
+        abkuerzung_muster_davor = rf"\b[A-ZÀ-Ö]\.?\s+{nachname_escaped}\b"
+        text = re.sub(abkuerzung_muster_davor, f"{korrekter_vorname} {nachname}", text, flags=re.IGNORECASE)
+
+        # Fall 3: abgekuerzter Vorname NACH dem Nachnamen ("MACKINNON J.",
+        # "HOBBS G.") - die Reihenfolge, wie sie in der DEB-LIVE-Torschuetzen-
+        # liste selbst verwendet wird und daher von Claude gelegentlich direkt
+        # uebernommen wird. Wird auf "Vorname Nachname" normalisiert, damit
+        # im Fliesstext durchgaengig die ausgeschriebene Form steht.
+        abkuerzung_muster_danach = rf"\b{nachname_escaped}\s+[A-ZÀ-Ö]\.?(?!\w)"
+        text = re.sub(abkuerzung_muster_danach, f"{korrekter_vorname} {nachname}", text, flags=re.IGNORECASE)
 
     return text
 
@@ -256,9 +274,15 @@ def generiere_nachbericht(
     client = Anthropic(api_key=api_key)
     prompt = _baue_prompt(spieldaten, heim_info, gast_info, zitate_text, sperrfrist)
 
+    # WICHTIG: max_tokens begrenzt, wie lang Claudes Antwort maximal werden
+    # darf. Das bisherige Limit (3000) reichte fuer einen Nachbericht OHNE
+    # Zitate meist aus, war aber zu knapp, sobald BEIDE Trainer-Zitate dazu-
+    # kamen (laengerer O-Ton-Abschnitt + die Zitate fliessen zusaetzlich in
+    # den Fliesstext ein) - die Antwort wurde dann mitten im Satz
+    # abgeschnitten. Deshalb hier grosszuegiger bemessen.
     antwort = client.messages.create(
         model=MODELL,
-        max_tokens=3000,
+        max_tokens=6000,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -266,7 +290,19 @@ def generiere_nachbericht(
     if not text_bloecke:
         return "Claude hat keine Textantwort geliefert (nur Denk-Schritte). Bitte nochmal versuchen."
 
+    # Sicherheitsnetz: Sollte die Antwort trotz des hoeheren Limits erneut
+    # mitten im Text abgeschnitten worden sein (stop_reason "max_tokens"),
+    # wird das als deutlicher Hinweis ans Ende angehaengt, statt den
+    # abgeschnittenen Text kommentarlos auszugeben.
+    abgeschnitten = getattr(antwort, "stop_reason", None) == "max_tokens"
+
     nachbericht_text = "\n".join(text_bloecke)
+    if abgeschnitten:
+        nachbericht_text += (
+            "\n\n*(Hinweis: Die Antwort wurde vom Sprachmodell abgeschnitten - "
+            "bitte 'Nachbericht generieren' ggf. erneut klicken oder die "
+            "Zitate kürzen.)*"
+        )
     # Sicherheitsnetz: falls trotz der Anweisung im Prompt doch ein Vorname
     # vertauscht wurde, hier automatisch auf die korrekte Schreibweise aus
     # den echten Spieldaten zuruecksetzen.
