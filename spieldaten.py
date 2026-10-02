@@ -382,21 +382,39 @@ def _erste_fundstelle(text: str, teamname: str) -> int | None:
 
 def _team_kuerzel_passt(kuerzel: str, teamname: str) -> bool:
     """
-    Prueft tolerant, ob ein Team-Kuerzel-Button (z.B. "EHF", "HCT") zu einem
-    vollen Teamnamen (z.B. "EHF Passau Black Hawks", "Hockey Club Tigers 1985")
-    gehoert. Zwei Faelle werden abgedeckt: (1) das Kuerzel kommt woertlich im
-    Teamnamen vor ("EHF" in "EHF Passau Black Hawks"), oder (2) das Kuerzel
-    sind die Anfangsbuchstaben der einzelnen Wortteile des Teamnamens
-    ("HCT" aus "Hockey Club Tigers 1985").
+    Prueft tolerant, ob ein Team-Kuerzel-Button (z.B. "EHF", "HCT", "ECP") zu
+    einem vollen Teamnamen gehoert. Drei Faelle werden abgedeckt:
+    (1) das Kuerzel kommt woertlich im Teamnamen vor
+        ("EHF" in "EHF Passau Black Hawks"),
+    (2) das Kuerzel sind die Anfangsbuchstaben JEDES einzelnen Wortteils
+        ("HCT" aus "Hockey Club Tigers 1985"),
+    (3) das Kuerzel besteht aus dem ERSTEN Wort KOMPLETT (haeufig selbst
+        schon eine Vereins-Abkuerzung wie "EC", "ESC", "ERC", "EV", "TSV",
+        ...) gefolgt von je einem Anfangsbuchstaben der weiteren Wortteile
+        ("ECP" aus "EC Peiting" = "EC" + "P") - bestaetigt durch einen
+        echten Fall, bei dem Variante (2) allein ("EP") nicht zum von DEB
+        LIVE verwendeten Kuerzel "ECP" passte und das Team dadurch gar
+        keiner Rolle (heim/gast) zugeordnet wurde.
     """
     if not kuerzel or not teamname:
         return False
-    kuerzel_l = kuerzel.lower()
+    kuerzel_l = kuerzel.strip().lower()
     teamname_l = teamname.lower()
     if kuerzel_l in teamname_l:
         return True
-    initialen = "".join(wort[0] for wort in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", teamname)).lower()
-    return bool(initialen) and (kuerzel_l in initialen or initialen.startswith(kuerzel_l))
+
+    worte = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", teamname)
+    if not worte:
+        return False
+
+    kandidaten = {"".join(wort[0] for wort in worte).lower()}
+    if len(worte) >= 2:
+        kandidaten.add((worte[0] + "".join(wort[0] for wort in worte[1:])).lower())
+
+    return any(
+        kuerzel_l == kandidat or kandidat.startswith(kuerzel_l) or kuerzel_l in kandidat
+        for kandidat in kandidaten
+    )
 
 
 def kader_pro_team(
