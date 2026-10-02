@@ -24,7 +24,7 @@ SPIELBERICHT_URL = (
 )
 
 
-def hole_sichtbaren_text(url: str) -> tuple[str, str]:
+def hole_sichtbaren_text(url: str) -> tuple[str, str, dict]:
     """
     Oeffnet die Spielbericht-Seite und liest den sichtbaren Text von ZWEI
     Reitern aus, im selben Browser-Durchlauf:
@@ -38,7 +38,13 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str]:
     - "Spielbericht" - hier stehen Besucherzahl, Schiedsrichter, Trainer und
       die Team-Gesamtstatistik (u.a. Schuesse aufs Tor), wie bisher.
 
-    Rueckgabe: (text_spielverlauf, text_spielbericht)
+    Zusaetzlich werden die Bild-URLs der beiden Vereinswappen eingesammelt
+    (siehe "logos" unten) - fuer die Darstellung in der App muss dafuer kein
+    Bild selbst heruntergeladen werden, der Browser des Betrachters laedt es
+    direkt von der Original-Adresse.
+
+    Rueckgabe: (text_spielverlauf, text_spielbericht, logos)
+    "logos" ist ein Dict {"heim": URL_oder_None, "gast": URL_oder_None}.
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -119,8 +125,42 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str]:
         if text_kaderlisten_teile:
             text_spielverlauf = text_spielverlauf + "\n" + "\n".join(text_kaderlisten_teile)
 
+        # Vereinswappen beider Mannschaften: die beiden auffaellig GROSSEN
+        # Bilder im Spielbereich (deutlich groesser als Icons/Flaggen und
+        # unterhalb der oberen Navigationsleiste, z.B. dem kleinen DEB-
+        # Verbandslogo) sind die Wappen - von links nach rechts erst Heim,
+        # dann Gast. Es wird nur die Bild-ADRESSE mitgenommen, nicht das Bild
+        # selbst heruntergeladen (siehe Docstring oben).
+        logos = {"heim": None, "gast": None}
+        try:
+            from urllib.parse import urljoin
+
+            bilder = page.locator("img")
+            anzahl_bilder = min(bilder.count(), 30)
+            kandidaten = []
+            for i in range(anzahl_bilder):
+                bild = bilder.nth(i)
+                try:
+                    box = bild.bounding_box(timeout=500)
+                    src = bild.get_attribute("src", timeout=500)
+                except Exception:
+                    continue
+                if not box or not src:
+                    continue
+                if box["width"] >= 50 and box["height"] >= 50 and box["y"] > 100:
+                    absolute_url = src if src.startswith("data:") else urljoin(page.url, src)
+                    kandidaten.append((box["y"], box["x"], absolute_url))
+            kandidaten.sort(key=lambda k: (k[0], k[1]))
+            if len(kandidaten) >= 2:
+                logos["heim"] = kandidaten[0][2]
+                logos["gast"] = kandidaten[1][2]
+            elif len(kandidaten) == 1:
+                logos["heim"] = kandidaten[0][2]
+        except Exception:
+            pass
+
         browser.close()
-        return text_spielverlauf, text_spielbericht
+        return text_spielverlauf, text_spielbericht, logos
 
 
 # Grossbuchstaben-Bereich bewusst weiter gefasst als nur A-Z/ÄÖÜ (deckt z.B.
@@ -520,9 +560,11 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
 
 
 if __name__ == "__main__":
-    roher_text_spielverlauf, roher_text = hole_sichtbaren_text(SPIELBERICHT_URL)
+    roher_text_spielverlauf, roher_text, logos = hole_sichtbaren_text(SPIELBERICHT_URL)
     ergebnis = parse_spielbericht(roher_text, roher_text_spielverlauf)
 
+    print("----- LOGOS -----")
+    print(logos)
     print("----- AUSGEWERTETE SPIELDATEN -----")
     for feld, wert in ergebnis.items():
         status = wert if wert is not None else "NICHT GEFUNDEN"
