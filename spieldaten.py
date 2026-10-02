@@ -43,8 +43,12 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str, dict]:
     Bild selbst heruntergeladen werden, der Browser des Betrachters laedt es
     direkt von der Original-Adresse.
 
-    Rueckgabe: (text_spielverlauf, text_spielbericht, logos)
+    Rueckgabe: (text_spielverlauf, text_spielbericht, logos, kader_rohdaten)
     "logos" ist ein Dict {"heim": URL_oder_None, "gast": URL_oder_None}.
+    "kader_rohdaten" ist ein Dict {team_kuerzel: gesammelter_seitentext} -
+    ein Eintrag je gefundenem Kuerzel-Button (z.B. "EHF"/"HCT"), siehe
+    Kommentar oben. Die Zuordnung zu "heim"/"gast" erfolgt erst in
+    kader_pro_team(), da hier die vollen Teamnamen noch nicht bekannt sind.
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -93,21 +97,47 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str, dict]:
         # Mannschaften einsammeln - dort steht IMMER der volle, ausgeschriebene
         # Vorname (z.B. "HOBBS Grady"), unabhaengig davon, ob die Torschuetzen-
         # Liste selbst nur abgekuerzte Vornamen zeigt (z.B. "MACKINNON J.").
-        # Es wird jeweils nur eine Mannschaft auf einmal angezeigt, umschaltbar
-        # ueber kleine Buttons mit dem Team-Kuerzel (z.B. "EHF"/"HCT") - welche
-        # Kuerzel das im Einzelfall sind, ist vorab nicht bekannt. Deshalb
-        # werden hier einfach ALLE kurzen, komplett grossgeschriebenen Buttons
-        # auf der Seite der Reihe nach angeklickt und der danach sichtbare
-        # Text zusaetzlich eingesammelt. Faelschlich angeklickte, unbeteiligte
-        # Buttons schaden nicht - die Namenserkennung sucht ohnehin nur nach
-        # einem sehr spezifischen Muster (siehe _baue_spieler_namen_aus_kaderliste).
-        text_kaderlisten_teile = []
-        try:
-            alle_buttons = page.get_by_role("button")
-            anzahl_buttons = min(alle_buttons.count(), 40)
+        # Bestaetigt durch echte DevTools-Screenshots des Nutzers: JEDER
+        # Daten-Abschnitt (Feldspieler, Goalies, Goalie-Wechsel, Strafen) hat
+        # einen EIGENEN, unabhaengigen ".-hd-button-group" mit je einem
+        # eigenen "EHF"/"HCT"-Button-Paar - es gibt also MEHRERE gleichnamige
+        # Buttons auf der Seite, keinen einzigen seitenweiten Filter.
+        #
+        # Fruehere Version (Fehler, fuehrte zur gemeldeten Vermischung von
+        # Rueckennummern/Namen zwischen den Mannschaften): alle gleichnamigen
+        # Buttons über die GANZE Seite hinweg nacheinander anklicken und
+        # danach jeweils den GESAMTEN <body>-Text einsammeln. Da die Toggles
+        # unabhaengig voneinander sind, war der <body>-Text nach einem Klick
+        # oft eine Mischung aus den (bereits wieder veraenderten) Zustaenden
+        # mehrerer Abschnitte.
+        #
+        # Fix: Klick UND Text-Erfassung werden strikt je Abschnitt (Container)
+        # skaliert - es wird nur innerhalb des jeweiligen Containers geklickt
+        # und auch nur dessen eigener Text (nicht der ganzen Seite) direkt
+        # danach eingesammelt. Treffer desselben Kuerzels aus mehreren
+        # Abschnitten (z.B. einmal Feldspieler, einmal Goalies) werden unter
+        # demselben Schluessel zusammengefuegt. Die Zuordnung Kuerzel ->
+        # "heim"/"gast" erfolgt weiterhin separat in kader_pro_team(), da
+        # dort erst die vollen Teamnamen bekannt sind.
+        kader_container_selektoren = [
+            ".-hd-los-game-full-report-field-players",
+            ".-hd-los-game-full-report-goal-keepers",
+            ".-hd-los-game-full-report-goal-keeper-changes",
+            ".-hd-los-game-full-report-penalties",
+        ]
+        kader_rohdaten: dict[str, str] = {}
+        for selektor in kader_container_selektoren:
+            try:
+                container = page.locator(selektor).first
+                if container.count() == 0:
+                    continue
+                buttons = container.locator(".-hd-button-group button")
+                anzahl_buttons = min(buttons.count(), 10)
+            except Exception:
+                continue
             for i in range(anzahl_buttons):
                 try:
-                    knopf = alle_buttons.nth(i)
+                    knopf = buttons.nth(i)
                     knopf_text = knopf.inner_text(timeout=800).strip()
                 except Exception:
                     continue
@@ -115,15 +145,47 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str, dict]:
                     continue
                 try:
                     knopf.click(timeout=1500)
-                    page.wait_for_timeout(700)
-                    text_kaderlisten_teile.append(page.inner_text("body"))
+                    page.wait_for_timeout(500)
+                    text_nach_klick = container.inner_text(timeout=2000)
                 except Exception:
                     continue
-        except Exception:
-            pass
+                kader_rohdaten[knopf_text] = kader_rohdaten.get(knopf_text, "") + "\n" + text_nach_klick
 
-        if text_kaderlisten_teile:
-            text_spielverlauf = text_spielverlauf + "\n" + "\n".join(text_kaderlisten_teile)
+        # Fallback: falls keiner der oben erwarteten Container-Selektoren auf
+        # der Seite gefunden wurde (z.B. weil DEB LIVE die Klassennamen
+        # irgendwann aendert), wird - wie in der Vorversion - versucht, ALLE
+        # gleichnamigen Buttons auf der gesamten Seite anzuklicken. Das birgt
+        # zwar wieder das Vermischungsrisiko, ist aber besser als gar keine
+        # Kaderliste zu erhalten; die Diagnose-Anzeige in der App macht ein
+        # solches Vermischen sichtbar (identische Rohtexte je Kuerzel).
+        if not kader_rohdaten:
+            try:
+                alle_buttons = page.get_by_role("button")
+                anzahl_buttons = min(alle_buttons.count(), 40)
+                for i in range(anzahl_buttons):
+                    try:
+                        knopf = alle_buttons.nth(i)
+                        knopf_text = knopf.inner_text(timeout=800).strip()
+                    except Exception:
+                        continue
+                    if not re.fullmatch(r"[A-ZÄÖÜ]{2,5}", knopf_text):
+                        continue
+                    try:
+                        knopf.click(timeout=1500)
+                        page.wait_for_timeout(700)
+                        text_nach_klick = page.inner_text("body")
+                    except Exception:
+                        continue
+                    kader_rohdaten[knopf_text] = kader_rohdaten.get(knopf_text, "") + "\n" + text_nach_klick
+            except Exception:
+                pass
+
+        # Fuer die Namenserkennung (siehe _baue_spieler_namen_aus_kaderliste
+        # oben, Team-unabhaengig) wird weiterhin einfach alles zusammen
+        # angehaengt - das Pooling dort ist bewusst teamunabhaengig und
+        # schadet nicht, siehe Docstring dort.
+        if kader_rohdaten:
+            text_spielverlauf = text_spielverlauf + "\n" + "\n".join(kader_rohdaten.values())
 
         # Vereinswappen beider Mannschaften: die beiden auffaellig GROSSEN
         # Bilder im Spielbereich (deutlich groesser als Icons/Flaggen und
@@ -160,7 +222,7 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str, dict]:
             pass
 
         browser.close()
-        return text_spielverlauf, text_spielbericht, logos
+        return text_spielverlauf, text_spielbericht, logos, kader_rohdaten
 
 
 # Grossbuchstaben-Bereich bewusst weiter gefasst als nur A-Z/ÄÖÜ (deckt z.B.
@@ -257,6 +319,145 @@ def _baue_spieler_namen_aus_kaderliste(*texte: str) -> dict[str, str]:
         nachname: zaehler.most_common(1)[0][0]
         for nachname, zaehler in treffer_pro_nachname.items()
     }
+
+
+def _kader_aus_text(text: str) -> dict[str, str]:
+    """
+    Wie _baue_spieler_namen_aus_kaderliste(), aber fuer GENAU EINEN
+    Textabschnitt (idealerweise bereits auf eine einzelne Mannschaft
+    eingegrenzt, siehe kader_pro_team()) und mit der Rueckennummer als
+    Schluessel statt dem Nachnamen - das wird fuer die Strafzeiten-Erfassung
+    gebraucht (Dropdown "Spielernummer" -> Name).
+    """
+    kader: dict[str, str] = {}
+    tokens = text.split()
+    i = 0
+    while i < len(tokens):
+        if tokens[i].isdigit() and 1 <= len(tokens[i]) <= 3:
+            nummer = tokens[i]
+            j = i + 1
+            nachname_tokens = []
+            while j < len(tokens) and _GROSSBUCHSTABEN_TOKEN.match(tokens[j]):
+                nachname_tokens.append(tokens[j])
+                j += 1
+            if (
+                nachname_tokens
+                and j < len(tokens)
+                and _TITEL_TOKEN.match(tokens[j])
+                and not _GROSSBUCHSTABEN_TOKEN.match(tokens[j])
+            ):
+                nachname = " ".join(nachname_tokens).title()
+                vorname = tokens[j]
+                kader[nummer] = f"{vorname} {nachname}"
+                i = j + 1
+                continue
+        i += 1
+    return kader
+
+
+def _erste_fundstelle(text: str, teamname: str) -> int | None:
+    """
+    Sucht die erste Fundstelle eines Teamnamens in einem Text, toleranter als
+    ein exakter Treffer: zuerst der volle Name, dann (falls nicht gefunden)
+    nur die letzten zwei Woerter, dann nur das letzte Wort - z.B. findet das
+    auch "Black Hawks" oder "Hawks", wenn "EHF Passau Black Hawks" in der
+    Kaderliste selbst leicht anders/abgekuerzt geschrieben steht. Gibt None
+    zurueck, wenn gar keine der Varianten gefunden wird.
+    """
+    if not text or not teamname:
+        return None
+    text_l = text.lower()
+    worte = teamname.split()
+    kandidaten = [teamname.strip()]
+    if len(worte) >= 2:
+        kandidaten.append(" ".join(worte[-2:]))
+    if worte:
+        kandidaten.append(worte[-1])
+    for kandidat in kandidaten:
+        pos = text_l.find(kandidat.lower())
+        if pos != -1:
+            return pos
+    return None
+
+
+def _team_kuerzel_passt(kuerzel: str, teamname: str) -> bool:
+    """
+    Prueft tolerant, ob ein Team-Kuerzel-Button (z.B. "EHF", "HCT") zu einem
+    vollen Teamnamen (z.B. "EHF Passau Black Hawks", "Hockey Club Tigers 1985")
+    gehoert. Zwei Faelle werden abgedeckt: (1) das Kuerzel kommt woertlich im
+    Teamnamen vor ("EHF" in "EHF Passau Black Hawks"), oder (2) das Kuerzel
+    sind die Anfangsbuchstaben der einzelnen Wortteile des Teamnamens
+    ("HCT" aus "Hockey Club Tigers 1985").
+    """
+    if not kuerzel or not teamname:
+        return False
+    kuerzel_l = kuerzel.lower()
+    teamname_l = teamname.lower()
+    if kuerzel_l in teamname_l:
+        return True
+    initialen = "".join(wort[0] for wort in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", teamname)).lower()
+    return bool(initialen) and (kuerzel_l in initialen or initialen.startswith(kuerzel_l))
+
+
+def kader_pro_team(
+    kader_rohdaten: dict[str, str],
+    heimteam: str | None,
+    gastteam: str | None,
+) -> dict[str, dict[str, str]]:
+    """
+    Ordnet die beim Scraping gesammelten Kaderlisten-Texte (ein Textblock je
+    angeklicktem Team-Kuerzel-Button, siehe hole_sichtbaren_text(),
+    "kader_rohdaten") den beiden Mannschaften "heim"/"gast" zu und wertet
+    jeden Abschnitt separat aus.
+
+    Hauptstrategie: das Kuerzel selbst (z.B. "EHF"/"HCT") mit dem vollen
+    Teamnamen abgleichen (_team_kuerzel_passt) - bestaetigt durch einen
+    echten Screenshot der Seite, auf dem genau solche Kuerzel-Buttons ueber
+    der Kaderliste zu sehen sind und die Tabelle zuverlaessig filtern.
+
+    Fallback, falls KEIN Kuerzel einem Team zugeordnet werden kann (z.B. weil
+    die Buttons anders beschriftet sind als angenommen): der gesamte
+    gesammelte Text wird stattdessen anhand der ersten Fundstelle der vollen
+    Teamnamen in zwei Abschnitte aufgeteilt. Das ist weniger praezise, aber
+    besser als gar kein Kader.
+    """
+    ergebnis: dict[str, dict[str, str]] = {"heim": {}, "gast": {}}
+    if not kader_rohdaten or not heimteam or not gastteam:
+        return ergebnis
+
+    treffer_gefunden = False
+    for kuerzel, text in kader_rohdaten.items():
+        for rolle, teamname in (("heim", heimteam), ("gast", gastteam)):
+            if _team_kuerzel_passt(kuerzel, teamname or ""):
+                kader_block = _kader_aus_text(text)
+                # Falls aus Versehen zwei Kuerzel auf dieselbe Rolle zu
+                # passen scheinen, wird das vollstaendigere Kader (mehr
+                # erkannte Spieler) behalten.
+                if len(kader_block) > len(ergebnis[rolle]):
+                    ergebnis[rolle] = kader_block
+                    treffer_gefunden = True
+                break
+
+    if treffer_gefunden:
+        return ergebnis
+
+    # Fallback: Text-Anker-Suche ueber den gesamten gesammelten Rohtext.
+    kader_rohtext = "\n".join(kader_rohdaten.values())
+    pos_heim = _erste_fundstelle(kader_rohtext, heimteam)
+    pos_gast = _erste_fundstelle(kader_rohtext, gastteam)
+    if pos_heim is None or pos_gast is None or pos_heim == pos_gast:
+        return ergebnis
+
+    if pos_heim < pos_gast:
+        text_heim = kader_rohtext[pos_heim:pos_gast]
+        text_gast = kader_rohtext[pos_gast:]
+    else:
+        text_gast = kader_rohtext[pos_gast:pos_heim]
+        text_heim = kader_rohtext[pos_heim:]
+
+    ergebnis["heim"] = _kader_aus_text(text_heim)
+    ergebnis["gast"] = _kader_aus_text(text_gast)
+    return ergebnis
 
 
 def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
@@ -560,11 +761,14 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
 
 
 if __name__ == "__main__":
-    roher_text_spielverlauf, roher_text, logos = hole_sichtbaren_text(SPIELBERICHT_URL)
+    roher_text_spielverlauf, roher_text, logos, kader_rohdaten = hole_sichtbaren_text(SPIELBERICHT_URL)
     ergebnis = parse_spielbericht(roher_text, roher_text_spielverlauf)
+    kader = kader_pro_team(kader_rohdaten, ergebnis.get("heimteam"), ergebnis.get("gastteam"))
 
     print("----- LOGOS -----")
     print(logos)
+    print("----- KADER PRO TEAM -----")
+    print(kader)
     print("----- AUSGEWERTETE SPIELDATEN -----")
     for feld, wert in ergebnis.items():
         status = wert if wert is not None else "NICHT GEFUNDEN"

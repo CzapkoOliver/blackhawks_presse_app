@@ -30,6 +30,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -153,13 +154,62 @@ BH_NAV_ICON_UEBERSICHT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="
 BH_NAV_ICON_FRAGEN = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
 BH_NAV_ICON_UEBERSETZER = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>'
 BH_NAV_ICON_NACHBERICHT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6M9 9h1"/></svg>'
+BH_NAV_ICON_STRAFZEITEN = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 7v5l3 2"/></svg>'
+
+# Feste Liste gaengiger Strafzeiten-Gruende fuer das Dropdown auf der
+# Strafzeiten-Seite. "Sonstiges" steht bewusst am Ende und schaltet dort
+# ein separates Freitextfeld frei, falls ein Grund dabei ist, der hier
+# (noch) nicht aufgefuehrt ist.
+STRAFZEITEN_GRUENDE = [
+    "Beinstellen (Tripping)",
+    "Haken (Hooking)",
+    "Halten (Holding)",
+    "Behinderung (Interference)",
+    "Stockschlag (Slashing)",
+    "Hoher Stock (High Sticking)",
+    "Crosscheck",
+    "Ellenbogencheck (Elbowing)",
+    "Kniecheck (Kneeing)",
+    "Unsportliches Verhalten",
+    "Spielverzögerung (Delay of Game)",
+    "Unerlaubter Körperangriff",
+    "Zu viele Spieler auf dem Eis",
+    "Diving/Schwalbe",
+    "Stockwurf",
+    "Torraumbehinderung",
+    "Boarding (Bandencheck)",
+    "Check gegen Kopf und Nacken",
+    "Checking from Behind",
+    "Faustkampf (Fight)",
+    "Besonders gefährliche Stockfouls",
+    "Absichtliche Verletzungsaktionen",
+    "Schiedsrichterbeleidigung",
+    "Wiederholte Regelverstöße",
+    "Provokationen",
+    "Vorsätzliche Verletzungsabsicht",
+    "Spucken",
+    "Tätlichkeiten gegen Schiedsrichter",
+    "Beschimpfung von Offiziellen",
+    "Sonstiges",
+]
 
 
-def bh_nav_item(icon: str, label: str, anker: str, aktiv: bool = False) -> str:
-    """Rendert einen Eintrag im Sidebar-Menue als Sprungmarke (#anker) zum
-    jeweiligen Abschnitt auf der Seite - optisch wie im abgestimmten Mock Up."""
+def bh_nav_item(icon: str, label: str, anker: str, aktiv: bool = False, href_praefix: str = "") -> str:
+    """
+    Rendert einen Eintrag im Sidebar-Menue als Sprungmarke (#anker) zum
+    jeweiligen Abschnitt auf der Seite - optisch wie im abgestimmten Mock Up.
+
+    "href_praefix" wird fuer die (separate) Strafzeiten-Seite gebraucht: die
+    liegt NICHT auf derselben Seite wie das Dashboard, sondern wird ueber den
+    Query-Parameter "?seite=..." ausgewaehlt (siehe weiter unten). Ein Link,
+    der von der jeweils ANDEREN Seite aus auf einen Abschnitt zeigt, braucht
+    deshalb zusaetzlich zur Sprungmarke auch den passenden "?seite=..."-Teil,
+    damit ein echter Seitenwechsel (nicht nur ein Hinscrollen) ausgeloest
+    wird. Ist man bereits auf der Zielseite, bleibt href_praefix leer - dann
+    bleibt es beim bisherigen, schnellen reinen Anker-Sprung ohne Neuladen.
+    """
     klasse = "bh-nav-item active" if aktiv else "bh-nav-item"
-    return f'<a class="{klasse}" href="#{anker}">{icon}<span>{label}</span></a>'
+    return f'<a class="{klasse}" href="{href_praefix}#{anker}">{icon}<span>{label}</span></a>'
 
 
 def bh_abschnitt_titel(icon: str, text: str) -> None:
@@ -216,6 +266,25 @@ def bh_team_wappen_html(team_name: str, logo_url: str | None, groesse: int = 34)
 # Streamlits Sidebar laesst sich bereits eingebaut per Klick einklappen
 # (Pfeil oben) - dafuer ist kein eigener Code noetig.
 # ---------------------------------------------------------------------------
+
+# Welche "Seite" ist gerade aktiv? Anders als die anderen vier Menuepunkte
+# (die nur zu einem Abschnitt auf EIN UND DERSELBEN Seite hinscrollen) soll
+# "Strafzeiten" eine WIRKLICH eigene, vom restlichen Dashboard getrennte
+# Ansicht sein - u.a. damit sie nicht immer mit nach unten gescrollt werden
+# muss. Dafuer wird ein echter Query-Parameter in der URL verwendet
+# ("?seite=strafzeiten"), der (anders als ein reiner #Anker) auch in Python
+# auswertbar ist (st.query_params) und so entscheidet, welcher Inhalt
+# ueberhaupt gerendert wird - nicht nur, wohin gescrollt wird.
+bh_seite = st.query_params.get("seite", "dashboard")
+if bh_seite not in ("dashboard", "strafzeiten"):
+    bh_seite = "dashboard"
+bh_ist_strafzeiten_seite = bh_seite == "strafzeiten"
+# Praefixe fuer die Menue-Links: nur gesetzt, wenn ein ECHTER Seitenwechsel
+# noetig ist (man ist gerade NICHT auf der Zielseite) - sonst bleibt es beim
+# schnellen reinen Anker-Sprung ohne Neuladen der Seite.
+_bh_zu_dashboard = "?seite=dashboard" if bh_ist_strafzeiten_seite else ""
+_bh_zu_strafzeiten = "" if bh_ist_strafzeiten_seite else "?seite=strafzeiten"
+
 with st.sidebar:
     if VEREINSLOGO_URL:
         st.markdown(
@@ -233,10 +302,17 @@ with st.sidebar:
 
     st.markdown(
         '<div class="bh-nav">'
-        + bh_nav_item(BH_NAV_ICON_UEBERSICHT, "Spielübersicht", "bh-spieluebersicht", aktiv=True)
-        + bh_nav_item(BH_NAV_ICON_FRAGEN, "Pressefragen", "bh-pressefragen")
-        + bh_nav_item(BH_NAV_ICON_UEBERSETZER, "Live-Übersetzer", "bh-liveuebersetzer")
-        + bh_nav_item(BH_NAV_ICON_NACHBERICHT, "Nachbericht", "bh-nachbericht")
+        + bh_nav_item(
+            BH_NAV_ICON_UEBERSICHT, "Spielübersicht", "bh-spieluebersicht",
+            aktiv=not bh_ist_strafzeiten_seite, href_praefix=_bh_zu_dashboard,
+        )
+        + bh_nav_item(BH_NAV_ICON_FRAGEN, "Pressefragen", "bh-pressefragen", href_praefix=_bh_zu_dashboard)
+        + bh_nav_item(BH_NAV_ICON_UEBERSETZER, "Live-Übersetzer", "bh-liveuebersetzer", href_praefix=_bh_zu_dashboard)
+        + bh_nav_item(BH_NAV_ICON_NACHBERICHT, "Nachbericht", "bh-nachbericht", href_praefix=_bh_zu_dashboard)
+        + bh_nav_item(
+            BH_NAV_ICON_STRAFZEITEN, "Strafzeiten", "bh-strafzeiten",
+            aktiv=bh_ist_strafzeiten_seite, href_praefix=_bh_zu_strafzeiten,
+        )
         + "</div>",
         unsafe_allow_html=True,
     )
@@ -264,37 +340,32 @@ if laden:
         st.warning("Bitte zuerst einen Link zum Spielbericht einfügen.")
         st.stop()
 
-    # Direkt nach Spielende zeigt DEB LIVE das Spiel manchmal noch kurz
-    # als "laeuft" an, bevor die Seite auf "beendet" umschaltet. Deshalb
-    # hier mehrmals mit Wartezeit dazwischen versuchen, bis entweder das
-    # Spiel als "beendet" markiert ist ODER die Versuche aufgebraucht
-    # sind. Sind Teamnamen/Ergebnis schon lesbar, aber das Spiel laeuft
-    # noch, wird NICHT einfach ein Fehler angezeigt: stattdessen wird
-    # nach dem letzten Versuch der aktuelle Zwischenstand ausgewertet
-    # und deutlich als "noch nicht offiziell beendet" gekennzeichnet.
+    # Die App wird bewusst auch WAEHREND eines laufenden Spiels genutzt
+    # (z.B. um das Strafzeiten-Protokoll live mitzuschreiben) - deshalb wird
+    # NICHT mehr darauf gewartet, dass der Status auf "Spiel beendet"
+    # wechselt. Sobald Teamnamen/Ergebnis lesbar sind, werden die Daten
+    # sofort uebernommen, ganz gleich ob das Spiel laut DEB LIVE noch laeuft
+    # oder schon vorbei ist (siehe die separate Warnung weiter unten fuer den
+    # laufenden Fall). Die Wiederholung mit Wartezeit dazwischen greift nur
+    # noch, wenn die Seite beim jeweiligen Versuch GAR NICHT richtig
+    # ausgelesen werden konnte (z.B. kurzzeitiger Ladefehler) - nicht mehr,
+    # weil das Spiel "nur" noch laeuft.
     daten = None
     for versuch in range(1, MAX_VERSUCHE + 1):
         with st.spinner(f"Lade Spieldaten von DEB LIVE ... (Versuch {versuch}/{MAX_VERSUCHE})"):
-            roher_text_spielverlauf, roher_text, logos = spieldaten.hole_sichtbaren_text(url)
+            roher_text_spielverlauf, roher_text, logos, kader_rohdaten = spieldaten.hole_sichtbaren_text(url)
             daten = spieldaten.parse_spielbericht(roher_text, roher_text_spielverlauf)
 
         vollstaendig_lesbar = daten["heimteam"] and daten["gastteam"] and daten["endergebnis"]
 
-        if vollstaendig_lesbar and daten["ist_beendet"]:
-            break  # offiziell beendet - fertig, kein weiterer Versuch noetig
+        if vollstaendig_lesbar:
+            break  # lesbar - fertig, unabhaengig vom Spielstatus (laeuft/beendet)
 
         if versuch < MAX_VERSUCHE:
-            if vollstaendig_lesbar:
-                warte_text = (
-                    f"Spiel laeuft laut DEB LIVE noch (Status: {daten['status']}) - "
-                    f"warte {WARTEZEIT_SEKUNDEN} Sekunden auf das offizielle Ende ..."
-                )
-            else:
-                warte_text = (
-                    f"Seite konnte noch nicht ausgelesen werden - "
-                    f"warte {WARTEZEIT_SEKUNDEN} Sekunden und versuche es erneut ..."
-                )
-            with st.spinner(warte_text):
+            with st.spinner(
+                f"Seite konnte noch nicht ausgelesen werden - "
+                f"warte {WARTEZEIT_SEKUNDEN} Sekunden und versuche es erneut ..."
+            ):
                 time.sleep(WARTEZEIT_SEKUNDEN)
 
     if not daten["heimteam"] or not daten["gastteam"] or not daten["endergebnis"]:
@@ -360,6 +431,15 @@ if laden:
     heim_info = trainer_lookup.hole_nationalitaet_und_sprache(daten["trainer_heim"] or "")
     gast_info = trainer_lookup.hole_nationalitaet_und_sprache(daten["trainer_gast"] or "")
 
+    # Kaderlisten (Rueckennummer -> Name) den beiden Mannschaften "heim"/"gast"
+    # zuordnen - wird fuer die Strafzeiten-Erfassung gebraucht (Dropdowns
+    # "Mannschaft" -> "Spielernummer" -> automatisch ausgefuellter Name).
+    kader = spieldaten.kader_pro_team(kader_rohdaten, daten["heimteam"], daten["gastteam"])
+    # Rohdaten der Kaderliste merken (je Button-Kuerzel ein Textblock) -
+    # koennen im Strafzeiten-Bereich jederzeit zur Fehlersuche eingesehen
+    # werden, nicht nur wenn die Zuordnung komplett leer blieb.
+    st.session_state["kader_rohdaten"] = kader_rohdaten
+
     # Alles in den Session-State speichern, damit es bei jedem weiteren
     # Klick (Pressefragen/Nachbericht generieren) nicht verloren geht.
     st.session_state["daten"] = daten
@@ -369,6 +449,11 @@ if laden:
     st.session_state["naechste_unser_team"] = naechste_unser_team
     st.session_state["naechste_gegner"] = naechste_gegner
     st.session_state["logos"] = logos
+    st.session_state["kader"] = kader
+    # Neues Spiel geladen -> alte Strafzeiten-Eintraege vom vorherigen Spiel
+    # verwerfen, damit nicht versehentlich Strafen des falschen Spiels in der
+    # Liste/im Export landen.
+    st.session_state.pop("strafzeiten_df", None)
     # Rohtext ebenfalls merken (nicht nur bei Fehlern) - damit bei Bedarf
     # (z.B. falsch/abgekuerzt ausgelesene Spielernamen) auch nach einem
     # ERFOLGREICHEN Laden noch nachvollzogen werden kann, was auf der Seite
@@ -382,11 +467,247 @@ if laden:
 # Hauptbereich (Dashboard)
 # ---------------------------------------------------------------------------
 if "daten" not in st.session_state:
+    bh_leer_titel = "Strafzeiten-Protokoll & Spieltagsinformationen" if bh_ist_strafzeiten_seite else "Spielübersicht"
     st.markdown(
-        '<div class="bh-value" style="font-size:22px; color:#fff;">Spielübersicht</div>',
+        f'<div class="bh-value" style="font-size:22px; color:#fff;">{bh_leer_titel}</div>',
         unsafe_allow_html=True,
     )
     st.info("Bitte links in der Sidebar einen Link zum DEB-LIVE-Spielbericht einfügen und auf 'Daten laden' klicken.")
+elif bh_ist_strafzeiten_seite:
+    # -----------------------------------------------------------------------
+    # Eigenstaendige Strafzeiten-Seite (NICHT Teil des Dashboards darunter -
+    # bewusst getrennt, siehe bh_seite/bh_ist_strafzeiten_seite weiter oben).
+    # -----------------------------------------------------------------------
+    daten = st.session_state["daten"]
+    heim = daten["heimteam"]
+    gast = daten["gastteam"]
+
+    st.markdown('<div id="bh-strafzeiten"></div>', unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div style="margin-bottom:18px;">
+            <div class="bh-value" style="font-size:22px; color:#fff;">Strafzeiten-Protokoll &amp; Spieltagsinformationen</div>
+            <div style="color:#9a9a9a; font-size:13px; margin-top:2px;">{heim} – {gast}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container(border=True):
+        st.caption("Während des Spiels erfassen – Team wählen, Nummer wählen, Name wird automatisch ausgefüllt.")
+
+        st.text_area(
+            "Sonstige Notizen",
+            placeholder="z.B. besondere Vorkommnisse, Spielunterbrechungen, Stimmung im Stadion, Zuschauerzahl-Korrekturen ...",
+            key="sz_notizen",
+            height=100,
+        )
+
+        kader = st.session_state.get("kader", {"heim": {}, "gast": {}})
+        kader_heim = kader.get("heim", {})
+        kader_gast = kader.get("gast", {})
+
+        if not kader_heim and not kader_gast:
+            st.caption(
+                "ℹ️ Es konnten keine Kaderlisten mit Rückennummern aus dem Spielbericht "
+                "ausgelesen werden – Mannschaft/Nummer können unten trotzdem frei "
+                "eingetragen werden, nur die Auto-Ausfüllung des Namens entfällt dann."
+            )
+
+        # Diagnose-Bereich IMMER verfuegbar (nicht nur wenn beide Kader leer
+        # sind) - falls die Zuordnung zwar etwas liefert, aber inhaltlich
+        # falsch ist (z.B. Rueckennummern/Namen des falschen Teams), lässt
+        # sich hier genau nachvollziehen, was beim Scrapen je Team-Kuerzel-
+        # Button eingesammelt wurde.
+        kader_rohdaten = st.session_state.get("kader_rohdaten")
+        # Absicherung gegen veraltete Daten im Session-State: wurde die App
+        # zwischenzeitlich aktualisiert, aber seitdem noch kein frisches
+        # "Daten laden" ausgefuehrt, kann hier noch ein Rest aus einer
+        # AELTEREN App-Version liegen, der nicht mehr zur aktuellen Form
+        # passt (Streamlit behaelt den Session-State ueber Code-Aenderungen
+        # hinweg bei - nur ein echtes "Daten laden" ersetzt ihn). Ohne diese
+        # Pruefung fuehrte das zu einem Absturz ("'dict' object has no
+        # attribute 'split'"), weil der Diagnose-Bereich eine andere Form
+        # erwartet hat als tatsaechlich noch gespeichert war.
+        kader_rohdaten_gueltig = isinstance(kader_rohdaten, dict) and all(
+            isinstance(wert, str) for wert in kader_rohdaten.values()
+        )
+        if kader_rohdaten and not kader_rohdaten_gueltig:
+            st.warning(
+                "⚠️ Es liegen noch veraltete Kaderlisten-Rohdaten aus einem früheren Laden vor "
+                "(z. B. von vor einem App-Update). Bitte links in der Sidebar erneut auf "
+                "'Daten laden' klicken, um sie zu aktualisieren."
+            )
+        elif kader_rohdaten_gueltig:
+            with st.expander("Kaderliste zur Fehlersuche anzeigen (Rohdaten je Button)"):
+                st.caption(
+                    "Zeigt, was beim Scrapen nach Klick auf welchen Team-Kürzel-Button "
+                    "gefunden wurde, und was daraus als Kader erkannt wurde. Falls Nummern/"
+                    "Namen falsch zugeordnet sind, bitte diesen Abschnitt kopieren und senden."
+                )
+
+                # Schnell-Check OHNE auf den (langen) Rohtext schauen zu
+                # muessen: sind zwei Button-Erfassungen zeichengleich, hat der
+                # Klick vermutlich NICHTS an der Seite veraendert (z.B. weil
+                # der falsche Button getroffen wurde) - dann liefern
+                # zwangslaeufig auch beide Teams denselben (falschen) Kader.
+                kuerzel_liste = list(kader_rohdaten.keys())
+                for i in range(len(kuerzel_liste)):
+                    for j in range(i + 1, len(kuerzel_liste)):
+                        a, b = kuerzel_liste[i], kuerzel_liste[j]
+                        if kader_rohdaten[a].strip() == kader_rohdaten[b].strip():
+                            st.error(
+                                f"⚠️ Der eingesammelte Text nach Klick auf „{a}“ und „{b}“ ist "
+                                f"IDENTISCH ({len(kader_rohdaten[a])} Zeichen) - einer der beiden "
+                                "Klicks hat vermutlich gar nichts an der Seite verändert."
+                            )
+
+                for kuerzel, text in kader_rohdaten.items():
+                    erkanntes_kader = spieldaten._kader_aus_text(text)
+                    st.markdown(
+                        f"**Button „{kuerzel}“** ({len(text)} Zeichen eingesammelt) – "
+                        f"erkannt: {erkanntes_kader or 'nichts'}"
+                    )
+                    # WICHTIG: der Key haengt vom Inhalt ab (Laenge), nicht nur
+                    # vom Kuerzel - sonst zeigt dieses Feld (wie schon einmal
+                    # bei der Namens-Anzeige im Formular) nach einem erneuten
+                    # "Daten laden" mit einem ANDEREN Spiel weiterhin den
+                    # alten, zuerst gespeicherten Text an, egal was aktuell in
+                    # "text" steht (Streamlit haelt an einem einmal gesetzten
+                    # Wert fest, solange der Key gleich bleibt).
+                    st.text_area(
+                        f"Rohtext nach Klick auf „{kuerzel}“",
+                        value=text,
+                        height=200,
+                        key=f"kader_rohtext_{kuerzel}_{len(text)}",
+                    )
+                st.markdown(f"**Zugeordnet → Heim ({heim}):** {kader_heim or 'nichts'}")
+                st.markdown(f"**Zugeordnet → Gast ({gast}):** {kader_gast or 'nichts'}")
+
+        sz_team_optionen = ["– wählen –"]
+        if kader_heim:
+            sz_team_optionen.append(heim)
+        if kader_gast:
+            sz_team_optionen.append(gast)
+
+        sz_spalten = st.columns(3)
+        with sz_spalten[0]:
+            sz_team = st.selectbox("Mannschaft", sz_team_optionen, key="sz_team")
+        sz_rolle = "heim" if sz_team == heim else ("gast" if sz_team == gast else None)
+        sz_kader_team = kader_heim if sz_rolle == "heim" else (kader_gast if sz_rolle == "gast" else {})
+        sz_nummern_optionen = ["– wählen –"] + sorted(sz_kader_team.keys(), key=lambda n: int(n))
+
+        with sz_spalten[1]:
+            sz_nummer = st.selectbox(
+                "Spielernummer",
+                sz_nummern_optionen,
+                key="sz_nummer",
+                disabled=not sz_kader_team,
+            )
+        sz_name_automatisch = sz_kader_team.get(sz_nummer, "")
+        with sz_spalten[2]:
+            # WICHTIG: der Key haengt bewusst von Team+Nummer ab, nicht nur
+            # "sz_name_anzeige" - sonst behaelt das Eingabefeld (wegen
+            # Streamlits eigenem Mechanismus: ein Widget mit festem Key
+            # ignoriert nach dem allerersten Rendern jeden neuen "value"-
+            # Parameter und haelt stattdessen stur an seinem zuletzt
+            # gespeicherten Wert fest) den Namen der VORHERIGEN Auswahl bei,
+            # statt den neu ausgewaehlten Spieler anzuzeigen. Mit einem von
+            # der Auswahl abhaengigen Key entsteht bei jeder neuen Team-/
+            # Nummer-Kombination ein frisches Widget, das zuverlaessig den
+            # dazu passenden Namen zeigt.
+            sz_name = st.text_input(
+                "Spielername",
+                value=sz_name_automatisch,
+                key=f"sz_name_anzeige_{sz_rolle}_{sz_nummer}",
+                disabled=bool(sz_name_automatisch),
+                help="Wird bei bekannter Kaderliste automatisch ausgefüllt, kann sonst frei eingetragen werden.",
+            )
+
+        sz_spalten2 = st.columns(3)
+        with sz_spalten2[0]:
+            sz_zeit = st.text_input("Spielzeit", placeholder="z.B. 2. Drittel, 14:32", key="sz_zeit")
+        with sz_spalten2[1]:
+            sz_minuten = st.selectbox(
+                "Strafzeit",
+                [
+                    "2 Minuten",
+                    "2+2 Minuten",
+                    "5 Minuten",
+                    "10 Minuten (Disziplinar)",
+                    "20 Minuten (Spieldauer)",
+                    "25 Minuten (Matchstrafe)",
+                ],
+                key="sz_minuten",
+            )
+        with sz_spalten2[2]:
+            sz_grund_auswahl = st.selectbox(
+                "Grund",
+                STRAFZEITEN_GRUENDE,
+                key="sz_grund_auswahl",
+            )
+
+        sz_grund_sonstiges = ""
+        if sz_grund_auswahl == "Sonstiges":
+            sz_grund_sonstiges = st.text_input(
+                "Grund (frei eingeben)",
+                placeholder="z.B. Maskenabsitzen",
+                key="sz_grund_sonstiges",
+            )
+
+        if st.button("+ Strafe hinzufügen", type="primary"):
+            sz_grund = (
+                sz_grund_sonstiges.strip()
+                if sz_grund_auswahl == "Sonstiges"
+                else sz_grund_auswahl
+            )
+            if sz_team == "– wählen –" or not sz_zeit.strip():
+                st.warning("Bitte mindestens Mannschaft und Spielzeit angeben.")
+            elif sz_grund_auswahl == "Sonstiges" and not sz_grund_sonstiges.strip():
+                st.warning("Bitte einen Grund eingeben oder einen Eintrag aus der Liste wählen.")
+            else:
+                neue_zeile = {
+                    "Spielzeit": sz_zeit.strip(),
+                    "Mannschaft": sz_team,
+                    "Nummer": sz_nummer if sz_nummer != "– wählen –" else "",
+                    "Spieler": sz_name.strip(),
+                    "Strafzeit (Min.)": sz_minuten.split(" ")[0],
+                    "Grund": sz_grund,
+                }
+                bisherige = st.session_state.get("strafzeiten_df")
+                if bisherige is None or bisherige.empty:
+                    st.session_state["strafzeiten_df"] = pd.DataFrame([neue_zeile])
+                else:
+                    st.session_state["strafzeiten_df"] = pd.concat(
+                        [bisherige, pd.DataFrame([neue_zeile])], ignore_index=True
+                    )
+                st.rerun()
+
+        strafzeiten_df = st.session_state.get(
+            "strafzeiten_df",
+            pd.DataFrame(columns=["Spielzeit", "Mannschaft", "Nummer", "Spieler", "Strafzeit (Min.)", "Grund"]),
+        )
+
+        st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+        bearbeitete_df = st.data_editor(
+            strafzeiten_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="strafzeiten_editor",
+            hide_index=True,
+        )
+        # Bearbeitungen/Loeschungen aus dem Editor direkt uebernehmen, damit
+        # sie auch nach einem Rerun (z.B. "Strafe hinzufügen") erhalten bleiben.
+        st.session_state["strafzeiten_df"] = bearbeitete_df
+
+        dateiname_sz = f"strafzeiten_{heim}_{gast}.csv".replace(" ", "_")
+        csv_bytes = bearbeitete_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+        st.download_button(
+            "Als Datei herunterladen (.csv)",
+            data=csv_bytes,
+            file_name=dateiname_sz,
+            mime="text/csv",
+        )
 else:
     daten = st.session_state["daten"]
     gegner = st.session_state["gegner"]
@@ -702,9 +1023,15 @@ else:
 # per <iframe> eingebettetes Skript, das auf einen Klick/Sprung zur jeweiligen
 # Sprungmarke reagiert und dann den passenden Tab-Button in der eigentlichen
 # App per Klick aktiviert bzw. den Menuepunkt hervorhebt.
+#
+# Laeuft bewusst NUR auf der Dashboard-Seite: die Strafzeiten-Seite hat
+# weder Tabs noch mehrere Anker-Abschnitte, und das Skript wuerde dort sogar
+# die bereits korrekt (serverseitig in Python) gesetzte aktive Menue-
+# Markierung "Strafzeiten" wieder faelschlich zuruecksetzen.
 # ---------------------------------------------------------------------------
-components.html(
-    """
+if not bh_ist_strafzeiten_seite:
+    components.html(
+        """
     <script>
     (function(){
         function aktiviereTabFuerHash(hash){
