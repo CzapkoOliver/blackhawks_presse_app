@@ -310,7 +310,7 @@ with st.sidebar:
         + bh_nav_item(BH_NAV_ICON_UEBERSETZER, "Live-Übersetzer", "bh-liveuebersetzer", href_praefix=_bh_zu_dashboard)
         + bh_nav_item(BH_NAV_ICON_NACHBERICHT, "Nachbericht", "bh-nachbericht", href_praefix=_bh_zu_dashboard)
         + bh_nav_item(
-            BH_NAV_ICON_STRAFZEITEN, "Strafzeiten", "bh-strafzeiten",
+            BH_NAV_ICON_STRAFZEITEN, "Spieltags-Protokoll", "bh-strafzeiten",
             aktiv=bh_ist_strafzeiten_seite, href_praefix=_bh_zu_strafzeiten,
         )
         + "</div>",
@@ -467,7 +467,7 @@ if laden:
 # Hauptbereich (Dashboard)
 # ---------------------------------------------------------------------------
 if "daten" not in st.session_state:
-    bh_leer_titel = "Strafzeiten-Protokoll & Spieltagsinformationen" if bh_ist_strafzeiten_seite else "Spielübersicht"
+    bh_leer_titel = "Spieltags-Protokoll & Spieltagsinformationen" if bh_ist_strafzeiten_seite else "Spielübersicht"
     st.markdown(
         f'<div class="bh-value" style="font-size:22px; color:#fff;">{bh_leer_titel}</div>',
         unsafe_allow_html=True,
@@ -486,7 +486,7 @@ elif bh_ist_strafzeiten_seite:
     st.markdown(
         f"""
         <div style="margin-bottom:18px;">
-            <div class="bh-value" style="font-size:22px; color:#fff;">Strafzeiten-Protokoll &amp; Spieltagsinformationen</div>
+            <div class="bh-value" style="font-size:22px; color:#fff;">Spieltags-Protokoll &amp; Spieltagsinformationen</div>
             <div style="color:#9a9a9a; font-size:13px; margin-top:2px;">{heim} – {gast}</div>
         </div>
         """,
@@ -584,11 +584,14 @@ elif bh_ist_strafzeiten_seite:
                 st.markdown(f"**Zugeordnet → Heim ({heim}):** {kader_heim or 'nichts'}")
                 st.markdown(f"**Zugeordnet → Gast ({gast}):** {kader_gast or 'nichts'}")
 
-        sz_team_optionen = ["– wählen –"]
-        if kader_heim:
-            sz_team_optionen.append(heim)
-        if kader_gast:
-            sz_team_optionen.append(gast)
+        # WICHTIG: beide Teams sind IMMER waehlbar, unabhaengig davon, ob fuer
+        # sie eine Kaderliste erkannt wurde - sonst laesst sich ein Team gar
+        # nicht mehr auswaehlen, sobald seine Kaderliste (aus welchem Grund
+        # auch immer) nicht sauber eingelesen werden konnte. Fehlt die
+        # Kaderliste eines Teams, wird nur die Nummern-Auswahl fuer dieses
+        # Team deaktiviert (siehe "disabled=not sz_kader_team" unten) - Team
+        # und Spielername lassen sich dann weiterhin frei erfassen.
+        sz_team_optionen = ["– wählen –", heim, gast]
 
         sz_spalten = st.columns(3)
         with sz_spalten[0]:
@@ -598,12 +601,28 @@ elif bh_ist_strafzeiten_seite:
         sz_nummern_optionen = ["– wählen –"] + sorted(sz_kader_team.keys(), key=lambda n: int(n))
 
         with sz_spalten[1]:
-            sz_nummer = st.selectbox(
-                "Spielernummer",
-                sz_nummern_optionen,
-                key="sz_nummer",
-                disabled=not sz_kader_team,
-            )
+            if sz_kader_team:
+                sz_nummer = st.selectbox(
+                    "Spielernummer",
+                    sz_nummern_optionen,
+                    key="sz_nummer",
+                )
+            else:
+                # Keine Kaderliste fuer DIESES Team erkannt (z.B. weil die
+                # Nummernzuordnung beim Scrapen fuer diesen Gegner nicht
+                # geklappt hat) - statt eines nur ausgegrauten, nicht
+                # bedienbaren Dropdowns (fruehere Version) wird die Nummer
+                # dann frei eingetragen, damit die Strafe trotzdem erfasst
+                # werden kann. Eigener, vom Team abhaengiger Key, damit beim
+                # Wechsel zwischen Heim/Gast nicht versehentlich die Nummer
+                # des jeweils anderen Teams stehen bleibt.
+                sz_nummer = st.text_input(
+                    "Spielernummer",
+                    placeholder="z.B. 17",
+                    key=f"sz_nummer_frei_{sz_rolle}",
+                    help="Keine Kaderliste für dieses Team erkannt – Nummer bitte frei eintragen.",
+                )
+        sz_nummer = (sz_nummer or "").strip()
         sz_name_automatisch = sz_kader_team.get(sz_nummer, "")
         with sz_spalten[2]:
             # WICHTIG: der Key haengt bewusst von Team+Nummer ab, nicht nur
@@ -707,6 +726,141 @@ elif bh_ist_strafzeiten_seite:
             data=csv_bytes,
             file_name=dateiname_sz,
             mime="text/csv",
+            key="strafzeiten_download_btn",
+        )
+
+    # -------------------------------------------------------------------
+    # Tore-Protokoll - bewusst als ZWEITER, separater Container unterhalb
+    # der Strafzeiten, nicht vermischt in derselben Box (siehe Vorgabe:
+    # "Seite muss uebersichtlich bleiben"). Torschuetze/Assist 1/Assist 2
+    # sind STRIKT Dropdowns aus der Kaderliste (keine Freitext-Eingabe wie
+    # bei "Spielername" oben bei den Strafzeiten) - wie ausdruecklich
+    # gewuenscht. Die Spielsituation (Gleichzahl/Ueberzahl/Unterzahl) wird
+    # bewusst manuell per Dropdown erfasst statt automatisch aus den
+    # eingetragenen Strafzeiten berechnet: eine zuverlaessige automatische
+    # Berechnung muesste das freie Textfeld "Spielzeit" robust parsen und
+    # ueberlappende Strafzeiten ueber mehrere Drittel hinweg simulieren -
+    # das ist angesichts des heutigen Live-Tests ein vermeidbares
+    # Absturzrisiko und wird deshalb NICHT eingebaut.
+    # -------------------------------------------------------------------
+    st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="bh-value" style="font-size:16px; color:#fff; margin-bottom:6px;">Tore</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.container(border=True):
+        st.caption(
+            "Während des Spiels erfassen – Team wählen, Spielzeit eintragen, "
+            "Torschütze und Assists aus der Kaderliste auswählen."
+        )
+
+        # Gleiche Korrektur wie bei den Strafzeiten oben: beide Teams sind
+        # IMMER waehlbar, unabhaengig davon, ob ihre Kaderliste erkannt wurde.
+        tor_team_optionen = ["– wählen –", heim, gast]
+
+        tor_spalten = st.columns(3)
+        with tor_spalten[0]:
+            tor_team = st.selectbox("Mannschaft", tor_team_optionen, key="tor_team")
+        tor_rolle = "heim" if tor_team == heim else ("gast" if tor_team == gast else None)
+        tor_kader_team = kader_heim if tor_rolle == "heim" else (kader_gast if tor_rolle == "gast" else {})
+
+        # Anzeige-Text "Nummer – Name" je Dropdown-Eintrag (eindeutig, auch
+        # bei gleichen Vornamen) - ueber dieses Dict wird aus der Auswahl
+        # wieder der reine Name fuer die Tabelle/den CSV-Export gewonnen.
+        tor_spieler_anzeige = {
+            f"{nummer} – {name}": name
+            for nummer, name in sorted(tor_kader_team.items(), key=lambda kv: int(kv[0]))
+        }
+
+        with tor_spalten[1]:
+            tor_zeit = st.text_input("Spielzeit", placeholder="z.B. 2. Drittel, 09:47", key="tor_zeit")
+        with tor_spalten[2]:
+            tor_situation = st.selectbox(
+                "Spielsituation",
+                [
+                    "Gleichzahl (EQ)",
+                    "Überzahl – 1 Mann mehr (PP1)",
+                    "Überzahl – 2 Mann mehr (PP2)",
+                    "Unterzahl – 1 Mann weniger (SH1)",
+                    "Unterzahl – 2 Mann weniger (SH2)",
+                ],
+                key="tor_situation",
+            )
+
+        tor_spalten2 = st.columns(3)
+        with tor_spalten2[0]:
+            tor_torschuetze_anzeige = st.selectbox(
+                "Torschütze",
+                ["– wählen –"] + list(tor_spieler_anzeige.keys()),
+                key="tor_torschuetze",
+                disabled=not tor_kader_team,
+            )
+        with tor_spalten2[1]:
+            tor_assist1_anzeige = st.selectbox(
+                "Assist 1",
+                ["– kein –"] + list(tor_spieler_anzeige.keys()),
+                key="tor_assist1",
+                disabled=not tor_kader_team,
+            )
+        with tor_spalten2[2]:
+            tor_assist2_anzeige = st.selectbox(
+                "Assist 2",
+                ["– kein –"] + list(tor_spieler_anzeige.keys()),
+                key="tor_assist2",
+                disabled=not tor_kader_team,
+            )
+
+        if st.button("+ Tor hinzufügen", type="primary", key="tor_hinzufuegen_btn"):
+            if tor_team == "– wählen –" or not tor_zeit.strip():
+                st.warning("Bitte mindestens Mannschaft und Spielzeit angeben.")
+            elif tor_torschuetze_anzeige == "– wählen –":
+                st.warning("Bitte einen Torschützen auswählen.")
+            else:
+                neue_tor_zeile = {
+                    "Spielzeit": tor_zeit.strip(),
+                    "Mannschaft": tor_team,
+                    "Torschütze": tor_spieler_anzeige.get(tor_torschuetze_anzeige, ""),
+                    "Assist 1": tor_spieler_anzeige.get(tor_assist1_anzeige, ""),
+                    "Assist 2": tor_spieler_anzeige.get(tor_assist2_anzeige, ""),
+                    "Spielsituation": tor_situation,
+                }
+                bisherige_tore = st.session_state.get("tore_df")
+                if bisherige_tore is None or bisherige_tore.empty:
+                    st.session_state["tore_df"] = pd.DataFrame([neue_tor_zeile])
+                else:
+                    st.session_state["tore_df"] = pd.concat(
+                        [bisherige_tore, pd.DataFrame([neue_tor_zeile])], ignore_index=True
+                    )
+                st.rerun()
+
+        tore_df = st.session_state.get(
+            "tore_df",
+            pd.DataFrame(
+                columns=["Spielzeit", "Mannschaft", "Torschütze", "Assist 1", "Assist 2", "Spielsituation"]
+            ),
+        )
+
+        st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+        bearbeitete_tore_df = st.data_editor(
+            tore_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="tore_editor",
+            hide_index=True,
+        )
+        # Bearbeitungen/Loeschungen aus dem Editor direkt uebernehmen, damit
+        # sie auch nach einem Rerun (z.B. "Tor hinzufügen") erhalten bleiben.
+        st.session_state["tore_df"] = bearbeitete_tore_df
+
+        dateiname_tore = f"tore_{heim}_{gast}.csv".replace(" ", "_")
+        csv_bytes_tore = bearbeitete_tore_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+        st.download_button(
+            "Als Datei herunterladen (.csv)",
+            data=csv_bytes_tore,
+            file_name=dateiname_tore,
+            mime="text/csv",
+            key="tore_download_btn",
         )
 else:
     daten = st.session_state["daten"]
