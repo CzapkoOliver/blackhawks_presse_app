@@ -225,6 +225,16 @@ def hole_sichtbaren_text(url: str) -> tuple[str, str, dict]:
         return text_spielverlauf, text_spielbericht, logos, kader_rohdaten
 
 
+def _wirkt_wie_teamname(wert: str) -> bool:
+    """
+    Einfache Plausibilitaetspruefung: ein echter Teamname ist nicht leer und
+    besteht nicht nur aus Ziffern/Doppelpunkt/Leerzeichen (das waere eher ein
+    Ergebnis oder eine Uhrzeit, die versehentlich an der falschen Stelle im
+    Text als "Teamname" erfasst wurde).
+    """
+    return bool(wert) and not re.fullmatch(r"[\d:\s]+", wert)
+
+
 # Grossbuchstaben-Bereich bewusst weiter gefasst als nur A-Z/ÄÖÜ (deckt z.B.
 # auch "Á" in "KOVÁCS" oder "Č"/"Ř" in tschechischen Namen ab), da im
 # Eishockey haeufig internationale Spielernamen vorkommen.
@@ -426,55 +436,81 @@ def kader_pro_team(
     Ordnet die beim Scraping gesammelten Kaderlisten-Texte (ein Textblock je
     angeklicktem Team-Kuerzel-Button, siehe hole_sichtbaren_text(),
     "kader_rohdaten") den beiden Mannschaften "heim"/"gast" zu und wertet
-    jeden Abschnitt separat aus.
+    jeden Abschnitt separat aus. Drei Strategien, in dieser Reihenfolge:
 
-    Hauptstrategie: das Kuerzel selbst (z.B. "EHF"/"HCT") mit dem vollen
-    Teamnamen abgleichen (_team_kuerzel_passt) - bestaetigt durch einen
-    echten Screenshot der Seite, auf dem genau solche Kuerzel-Buttons ueber
-    der Kaderliste zu sehen sind und die Tabelle zuverlaessig filtern.
+    1. Das Kuerzel selbst (z.B. "EHF"/"HCT") textlich mit dem vollen
+       Teamnamen abgleichen (_team_kuerzel_passt).
 
-    Fallback, falls KEIN Kuerzel einem Team zugeordnet werden kann (z.B. weil
-    die Buttons anders beschriftet sind als angenommen): der gesamte
-    gesammelte Text wird stattdessen anhand der ersten Fundstelle der vollen
-    Teamnamen in zwei Abschnitte aufgeteilt. Das ist weniger praezise, aber
-    besser als gar kein Kader.
+    2. Eindeutigkeits-Schluss durch Ausschluss: wurden GENAU zwei
+       unterschiedliche Kuerzel eingesammelt und konnte NUR EINES davon per
+       (1) einem Team zugeordnet werden, MUSS das andere, nicht erkannte
+       Kuerzel zwangslaeufig zum jeweils anderen Team gehoeren - unabhaengig
+       davon, nach welchem (uns unbekannten) Schema der Verband dieses
+       Kuerzel gebildet hat. Das war noetig, nachdem sich beim echten
+       Live-Test zeigte, dass die Kuerzel-Vergabe des Verbands offenbar KEIN
+       einheitliches Muster aus dem Teamnamen folgt, sondern teils frei
+       vergebene offizielle Vereins-Codes sind (z.B. "STR" fuer "Stuttgart
+       Rebels" - weder reine Initialen "SR" noch "erstes Wort + Initiale"
+       "STUTTGARTR" passen darauf). Jedes Kuerzel, das (1) bereits erkannt
+       hat, zaehlt nicht nochmal in diesem Schritt.
+
+    3. Fallback, falls auch (2) nicht greift (z.B. weil mehr oder weniger als
+       zwei Kuerzel eingesammelt wurden, oder weil BEIDE Kuerzel unerkannt
+       blieben): der gesamte gesammelte Text wird stattdessen anhand der
+       ersten Fundstelle der vollen Teamnamen in zwei Abschnitte aufgeteilt.
+       Das ist weniger praezise, aber besser als gar kein Kader. Dieser
+       Schritt laeuft bewusst JE ROLLE EINZELN (nicht mehr global an- oder
+       abgeschaltet) - sonst wuerde ein erfolgreicher Treffer bei EINEM Team
+       den Versuch beim ANDEREN Team verhindern, selbst wenn dessen Kader
+       noch komplett leer ist.
     """
     ergebnis: dict[str, dict[str, str]] = {"heim": {}, "gast": {}}
     if not kader_rohdaten or not heimteam or not gastteam:
         return ergebnis
 
-    treffer_gefunden = False
-    for kuerzel, text in kader_rohdaten.items():
+    # Schritt 1: Kuerzel <-> Teamname textlich abgleichen.
+    kuerzel_zu_rolle: dict[str, str] = {}
+    for kuerzel in kader_rohdaten:
         for rolle, teamname in (("heim", heimteam), ("gast", gastteam)):
             if _team_kuerzel_passt(kuerzel, teamname or ""):
-                kader_block = _kader_aus_text(text)
-                # Falls aus Versehen zwei Kuerzel auf dieselbe Rolle zu
-                # passen scheinen, wird das vollstaendigere Kader (mehr
-                # erkannte Spieler) behalten.
-                if len(kader_block) > len(ergebnis[rolle]):
-                    ergebnis[rolle] = kader_block
-                    treffer_gefunden = True
+                kuerzel_zu_rolle.setdefault(kuerzel, rolle)
                 break
 
-    if treffer_gefunden:
-        return ergebnis
+    # Schritt 2: Eindeutigkeits-Schluss durch Ausschluss (siehe Docstring).
+    alle_kuerzel = list(kader_rohdaten.keys())
+    if len(alle_kuerzel) == 2 and len(kuerzel_zu_rolle) == 1:
+        bekanntes_kuerzel = next(iter(kuerzel_zu_rolle))
+        bekannte_rolle = kuerzel_zu_rolle[bekanntes_kuerzel]
+        andere_rolle = "gast" if bekannte_rolle == "heim" else "heim"
+        anderes_kuerzel = next(k for k in alle_kuerzel if k != bekanntes_kuerzel)
+        kuerzel_zu_rolle[anderes_kuerzel] = andere_rolle
 
-    # Fallback: Text-Anker-Suche ueber den gesamten gesammelten Rohtext.
-    kader_rohtext = "\n".join(kader_rohdaten.values())
-    pos_heim = _erste_fundstelle(kader_rohtext, heimteam)
-    pos_gast = _erste_fundstelle(kader_rohtext, gastteam)
-    if pos_heim is None or pos_gast is None or pos_heim == pos_gast:
-        return ergebnis
+    for kuerzel, rolle in kuerzel_zu_rolle.items():
+        kader_block = _kader_aus_text(kader_rohdaten[kuerzel])
+        # Falls aus Versehen zwei Kuerzel auf dieselbe Rolle zu passen
+        # scheinen, wird das vollstaendigere Kader (mehr erkannte Spieler)
+        # behalten.
+        if len(kader_block) > len(ergebnis[rolle]):
+            ergebnis[rolle] = kader_block
 
-    if pos_heim < pos_gast:
-        text_heim = kader_rohtext[pos_heim:pos_gast]
-        text_gast = kader_rohtext[pos_gast:]
-    else:
-        text_gast = kader_rohtext[pos_gast:pos_heim]
-        text_heim = kader_rohtext[pos_heim:]
+    # Schritt 3: Text-Anker-Fallback, nur fuer Rollen, die noch kein Kader
+    # haben.
+    if not ergebnis["heim"] or not ergebnis["gast"]:
+        kader_rohtext = "\n".join(kader_rohdaten.values())
+        pos_heim = _erste_fundstelle(kader_rohtext, heimteam)
+        pos_gast = _erste_fundstelle(kader_rohtext, gastteam)
+        if pos_heim is not None and pos_gast is not None and pos_heim != pos_gast:
+            if pos_heim < pos_gast:
+                text_heim = kader_rohtext[pos_heim:pos_gast]
+                text_gast = kader_rohtext[pos_gast:]
+            else:
+                text_gast = kader_rohtext[pos_gast:pos_heim]
+                text_heim = kader_rohtext[pos_heim:]
+            if not ergebnis["heim"]:
+                ergebnis["heim"] = _kader_aus_text(text_heim)
+            if not ergebnis["gast"]:
+                ergebnis["gast"] = _kader_aus_text(text_gast)
 
-    ergebnis["heim"] = _kader_aus_text(text_heim)
-    ergebnis["gast"] = _kader_aus_text(text_gast)
     return ergebnis
 
 
@@ -524,131 +560,68 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
     if spieler_namen:
         daten["spieler_namen"] = spieler_namen
 
-    # Endergebnis + beide Teamnamen stehen direkt hintereinander, z.B.:
-    # "4 : 2\nSC Riessersee\nSpiel beendet\nEHF Passau Black Hawks"
+    # Endergebnis + beide Teamnamen + Status stehen IMMER in genau dieser
+    # Reihenfolge direkt hintereinander, UNABHAENGIG vom Spielstand:
+    #   "<Ergebnis>\n<Heimteam>\n<Status-Text, beliebig>\n<Gastteam>"
+    # z.B. "4 : 2\nSC Riessersee\nSpiel beendet\nEHF Passau Black Hawks"
+    # (beendet), "0 : 0\nEHF Passau Black Hawks\nKurz vor Spielbeginn\n
+    # Stuttgart Rebels" (noch nicht begonnen) oder "1 : 3\nTeam A\n
+    # 2. Drittel, 09:12\nTeam B" (laeuft).
     #
-    # Zuerst wird GENAU auf "Spiel beendet" geprueft (wie urspruenglich) -
-    # das ist eindeutig und zuverlaessig. Ein voellig frei formuliertes
-    # Muster (irgendein Text als "Status") hat sich in der Praxis an einer
-    # falschen Stelle im Seitentext festgehakt und dadurch auch beendete
-    # Spiele nicht mehr erkannt - deshalb NUR bekannte, typische Status-
-    # Woerter fuer ein laufendes Spiel als Alternative zulassen.
-    kopf_match_beendet = re.search(
-        r"(\d+)\s*:\s*(\d+)\n([^\n]+)\nSpiel beendet\n([^\n]+)", text
-    )
-    if kopf_match_beendet:
-        daten["endergebnis"] = f"{kopf_match_beendet.group(1)}:{kopf_match_beendet.group(2)}"
-        daten["heimteam"] = kopf_match_beendet.group(3).strip()
-        daten["gastteam"] = kopf_match_beendet.group(4).strip()
-        daten["status"] = "Spiel beendet"
-        daten["ist_beendet"] = True
-    else:
-        # DEB LIVE zeigt es manchmal so an: Das Spiel ist in Wirklichkeit
-        # bereits vorbei (Endergebnis + komplette Statistik-Tabelle wie
-        # Schuesse, PIM, Drittelergebnisse sind schon vollstaendig da),
-        # aber die Statistiker haben den offiziellen Status noch nicht auf
-        # "Spiel beendet" gesetzt - stattdessen steht dort nur das generische
-        # Wort "Spiel" (ohne "beendet"). Ein wirklich noch laufendes Spiel
-        # zeigt dagegen NIE nur "Spiel" allein an, sondern immer einen
-        # laufzeit-/drittelbezogenen Hinweis (z.B. "1. Drittel" oder
-        # "Spielzeit: 22:10", siehe die Faelle weiter unten) - deshalb kann
-        # dieser Fall hier sicher als (praktisch) beendet behandelt werden,
-        # statt die App bis zum Abbruch nach allen Versuchen warten zu lassen.
-        kopf_match_generisch_beendet = re.search(
-            r"(\d+)\s*:\s*(\d+)\n([^\n]+)\nSpiel\n([^\n]+)", text
-        )
-        if kopf_match_generisch_beendet:
-            daten["endergebnis"] = f"{kopf_match_generisch_beendet.group(1)}:{kopf_match_generisch_beendet.group(2)}"
-            daten["heimteam"] = kopf_match_generisch_beendet.group(3).strip()
-            daten["gastteam"] = kopf_match_generisch_beendet.group(4).strip()
+    # FRUEHERE VERSION (Fehler): der Status-TEXT wurde gegen eine feste Liste
+    # bekannter Woerter geprueft ("Drittel", "Pause", "Spielzeit: ..." usw.).
+    # Das brach beim echten Live-Test, weil "Kurz vor Spielbeginn" nicht in
+    # dieser Liste stand - und wird bei JEDER kuenftigen, noch nicht
+    # gesehenen Formulierung erneut brechen, da sich eine vollstaendige
+    # Liste aller moeglichen Status-Texte nicht im Voraus erstellen laesst.
+    #
+    # FIX: der Status-Text wird gar nicht mehr gegen eine Wortliste geprueft,
+    # sondern IMMER woertlich uebernommen, ganz gleich was dort steht. Nur
+    # fuer die Frage "ist das Spiel damit offiziell beendet?" wird gezielt
+    # auf "Spiel beendet" (bzw. nur "Spiel" als vom Verband noch nicht
+    # aktualisierte Kurzform) geprueft - alles andere gilt automatisch als
+    # "laeuft noch" (ist_beendet=False), unabhaengig vom genauen Wortlaut.
+    for ergebnis_match in re.finditer(r"(\d+)\s*:\s*(\d+)\n([^\n]+)\n([^\n]+)\n([^\n]+)", text):
+        heimteam_kandidat = ergebnis_match.group(3).strip()
+        status_kandidat = ergebnis_match.group(4).strip()
+        gastteam_kandidat = ergebnis_match.group(5).strip()
+
+        # Einfache Absicherung gegen Fehltreffer an einer falschen Stelle im
+        # Seitentext: ein plausibler Teamname ist keine reine Zahl/Uhrzeit
+        # und nicht leer. Lieber an dieser Fundstelle weitersuchen (naechste
+        # Runde der Schleife) als falsche Team-/Trainerdaten anzuzeigen.
+        if not _wirkt_wie_teamname(heimteam_kandidat) or not _wirkt_wie_teamname(gastteam_kandidat):
+            continue
+        if not status_kandidat:
+            continue
+
+        daten["endergebnis"] = f"{ergebnis_match.group(1)}:{ergebnis_match.group(2)}"
+        daten["heimteam"] = heimteam_kandidat
+        daten["gastteam"] = gastteam_kandidat
+
+        status_kandidat_l = status_kandidat.lower()
+        if status_kandidat_l == "spiel beendet":
+            daten["status"] = "Spiel beendet"
+            daten["ist_beendet"] = True
+        elif status_kandidat_l == "spiel":
+            # DEB LIVE zeigt es manchmal so an: das Spiel ist in Wirklichkeit
+            # bereits vorbei (Endergebnis + komplette Statistik-Tabelle sind
+            # schon vollstaendig da), aber die Statistiker haben den
+            # offiziellen Status noch nicht auf "Spiel beendet" gesetzt -
+            # stattdessen steht dort nur das generische Wort "Spiel" (ohne
+            # "beendet"). Das wird sicher als (praktisch) beendet behandelt,
+            # statt die App bis zum Abbruch nach allen Versuchen warten zu
+            # lassen.
             daten["status"] = "Spiel beendet (Status auf DEB LIVE noch nicht aktualisiert)"
             daten["ist_beendet"] = True
-
-        # Die beiden folgenden Erkennungsschritte (laufendes Spiel) werden nur
-        # noch gebraucht, wenn oben WEDER "Spiel beendet" NOCH das generische
-        # "Spiel" (= praktisch beendet) gefunden wurde - sonst wuerden sie die
-        # bereits korrekt erkannten Daten wieder ueberschreiben/verwerfen.
-        kopf_match_laeuft = None if kopf_match_generisch_beendet else re.search(
-            r"(\d+)\s*:\s*(\d+)\n([^\n]+)\n"
-            r"(\d\.\s*Drittel|Drittelpause|Pause|Verl(?:ä|ae)ngerung|"
-            r"Nachspielzeit|Penaltyschie(?:ß|ss)en|Shootout|"
-            r"Spielzeit\s*:\s*\d{1,2}:\d{2})"
-            r"\n([^\n]+)",
-            text,
-            re.IGNORECASE,
-        )
-        if kopf_match_generisch_beendet:
-            pass
-        elif kopf_match_laeuft:
-            daten["endergebnis"] = f"{kopf_match_laeuft.group(1)}:{kopf_match_laeuft.group(2)}"
-            daten["heimteam"] = kopf_match_laeuft.group(3).strip()
-            daten["status"] = kopf_match_laeuft.group(4).strip()
-            daten["gastteam"] = kopf_match_laeuft.group(5).strip()
-            daten["ist_beendet"] = False
         else:
-            # Zweiter Versuch, bewusst SEHR tolerant: das obige Muster
-            # verlangt eine exakte Zeilenfolge "Ergebnis / Heimteam /
-            # EIN bekanntes Status-Wort / Gastteam". Waehrend eines
-            # laufenden Spiels kann der genaue Wortlaut des Status
-            # (z.B. "Spielzeit: 22:10") oder die Zeilenstruktur leicht
-            # abweichen - ohne direkten Zugriff auf die Live-Seite laesst
-            # sich das nicht vorab exakt vorhersagen. Deshalb hier NICHT
-            # auf einen bestimmten Status-Text angewiesen sein, sondern
-            # nur auf das eindeutig erkennbare Muster "Ergebnis, dann
-            # Teamname, dann (evtl.) eine Statuszeile, dann Teamname"
-            # in den Zeilen NACH dem Ergebnis.
-            for ergebnis_match in re.finditer(r"^\s*(\d+)\s*:\s*(\d+)\s*$", text, re.MULTILINE):
-                nachfolgende_zeilen = [
-                    zeile.strip()
-                    for zeile in text[ergebnis_match.end():].splitlines()[:6]
-                    if zeile.strip()
-                ]
-                if len(nachfolgende_zeilen) < 2:
-                    continue
-
-                heimteam_kandidat = nachfolgende_zeilen[0]
-                # Eine Zeile gilt als "Status" (statt als Teamname), wenn sie
-                # eine Uhrzeit-/Minutenangabe (z.B. "22:10") enthaelt oder
-                # eines der typischen Status-Woerter - so wird nicht auf
-                # exakten Wortlaut gepocht, sondern auf das MUSTER.
-                status_muster = re.compile(
-                    r"\d{1,2}\s*:\s*\d{2}|Drittel|Pause|Verl(?:ä|ae)ngerung|"
-                    r"Nachspielzeit|Penalty|Shootout|Halbzeit|beendet|laeuft|läuft",
-                    re.IGNORECASE,
-                )
-                status_kandidat = None
-                gastteam_kandidat = None
-                for folge_zeile in nachfolgende_zeilen[1:]:
-                    if status_muster.search(folge_zeile) and gastteam_kandidat is None:
-                        status_kandidat = folge_zeile
-                        continue
-                    if status_kandidat is not None:
-                        gastteam_kandidat = folge_zeile
-                        break
-
-                # Ein plausibler Teamname ist keine reine Zahl/Uhrzeit und
-                # nicht leer - einfache Absicherung gegen Fehltreffer. Wichtig:
-                # Es wird hier BEWUSST nur zugegriffen, wenn tatsaechlich eine
-                # erkennbare Statuszeile gefunden wurde (status_kandidat).
-                # Ohne das koennte sonst z.B. ein unbekannter Zwischentext
-                # faelschlich als Gastteam-Name uebernommen werden - dann
-                # lieber gar nichts erkennen (und die Diagnose-Anzeige in der
-                # App greifen lassen) als falsche Team-/Trainerdaten anzeigen.
-                def _wirkt_wie_teamname(wert: str) -> bool:
-                    return bool(wert) and not re.fullmatch(r"[\d:\s]+", wert)
-
-                if (
-                    status_kandidat is not None
-                    and _wirkt_wie_teamname(heimteam_kandidat)
-                    and gastteam_kandidat
-                    and _wirkt_wie_teamname(gastteam_kandidat)
-                ):
-                    daten["endergebnis"] = f"{ergebnis_match.group(1)}:{ergebnis_match.group(2)}"
-                    daten["heimteam"] = heimteam_kandidat
-                    daten["status"] = status_kandidat or "läuft (genauer Status unbekannt)"
-                    daten["gastteam"] = gastteam_kandidat
-                    daten["ist_beendet"] = False
-                    break
+            # Jeder andere Text (z.B. "Kurz vor Spielbeginn", "1. Drittel",
+            # "Spielzeit: 22:10", "Drittelpause", oder ein kuenftiger, heute
+            # noch unbekannter Status) wird 1:1 uebernommen - das Spiel gilt
+            # dann als noch nicht offiziell beendet.
+            daten["status"] = status_kandidat
+            daten["ist_beendet"] = False
+        break
 
     # Besucherzahl steht unter dem Label "Besucher" (nicht "Zuschauer"!)
     besucher_match = re.search(r"Besucher\s*\n\s*([\d.]+)", text)
