@@ -923,22 +923,32 @@ elif bh_ist_strafzeiten_seite:
 
         tor_spalten2 = st.columns(3)
         if tor_kader_team:
+            # Ein Spieler darf pro Tor nur EINMAL auftauchen (entweder als
+            # Torschuetze oder als einer der beiden Assists, nie doppelt) -
+            # deshalb wird jede nachfolgende Dropdown-Liste um die bereits
+            # weiter oben getroffene(n) Auswahl(en) bereinigt. Torschuetze
+            # bekommt bewusst die VOLLE Liste (es gibt noch nichts, was ihn
+            # einschraenken koennte); Assist 1 schliesst den Torschuetzen
+            # aus; Assist 2 schliesst Torschuetze UND Assist 1 aus.
+            tor_alle_optionen = list(tor_spieler_anzeige.keys())
             with tor_spalten2[0]:
                 tor_torschuetze_anzeige = st.selectbox(
                     "Torschütze",
-                    ["– wählen –"] + list(tor_spieler_anzeige.keys()),
+                    ["– wählen –"] + tor_alle_optionen,
                     key="tor_torschuetze",
                 )
+            tor_assist1_optionen = [o for o in tor_alle_optionen if o != tor_torschuetze_anzeige]
             with tor_spalten2[1]:
                 tor_assist1_anzeige = st.selectbox(
                     "Assist 1",
-                    ["– kein –"] + list(tor_spieler_anzeige.keys()),
+                    ["– kein –"] + tor_assist1_optionen,
                     key="tor_assist1",
                 )
+            tor_assist2_optionen = [o for o in tor_assist1_optionen if o != tor_assist1_anzeige]
             with tor_spalten2[2]:
                 tor_assist2_anzeige = st.selectbox(
                     "Assist 2",
-                    ["– kein –"] + list(tor_spieler_anzeige.keys()),
+                    ["– kein –"] + tor_assist2_optionen,
                     key="tor_assist2",
                 )
             tor_torschuetze_wert = tor_spieler_anzeige.get(tor_torschuetze_anzeige, "")
@@ -990,11 +1000,30 @@ elif bh_ist_strafzeiten_seite:
                 help="Entfernt den zuletzt hinzugefügten Tor-Eintrag.",
             )
 
+        # Sicherheitsnetz gegen doppelte Spieler bei einem Tor: bei der
+        # Dropdown-Variante oben wird das bereits strukturell verhindert
+        # (jede Liste schliesst die vorherige(n) Auswahl(en) aus), bei der
+        # Freitext-Variante (keine Kaderliste erkannt) ist das aber reiner
+        # Text und muss deshalb hier zusaetzlich geprueft werden - ein
+        # Spieler kann pro Tor nur entweder Torschuetze oder (ein) Assist
+        # sein, nie beides/mehrfach.
+        tor_beteiligte_werte = [
+            w.strip().lower()
+            for w in (tor_torschuetze_wert, tor_assist1_wert, tor_assist2_wert)
+            if w and w.strip()
+        ]
+        tor_spieler_doppelt = len(tor_beteiligte_werte) != len(set(tor_beteiligte_werte))
+
         if tor_hinzufuegen_geklickt:
             if tor_team == "– wählen –" or not tor_zeit.strip():
                 st.warning("Bitte mindestens Mannschaft und Spielzeit angeben.")
             elif tor_torschuetze_fehlt:
                 st.warning("Bitte einen Torschützen auswählen bzw. eintragen.")
+            elif tor_spieler_doppelt:
+                st.warning(
+                    "Ein Spieler kann bei einem Tor nicht doppelt erfasst werden "
+                    "(Torschütze und Assist müssen unterschiedliche Spieler sein)."
+                )
             else:
                 neue_tor_zeile = {
                     "Spielzeit": tor_zeit.strip(),
