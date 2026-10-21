@@ -41,6 +41,7 @@ import fragen_generator
 import live_uebersetzer
 import nachbericht_generator
 import nachbericht_docx
+import sicherung
 
 UNSER_TEAM = "EHF Passau Black Hawks"
 PRESSESPRECHER_NAME = "Oliver Czapko"
@@ -217,42 +218,46 @@ def bh_abschnitt_titel(icon: str, text: str) -> None:
     st.markdown(f'<div class="bh-section-titel">{icon}<span>{text}</span></div>', unsafe_allow_html=True)
 
 
-def bh_fokus_auf_mannschaft_dropdown(dropdown_index: int) -> None:
+def bh_fokus_setzen(ziel: str) -> None:
     """
     Komfortfunktion fuer den Live-Einsatz: setzt nach einem Formular-Reset
-    (siehe "bh_sz_reset_pending"/"bh_tor_reset_pending") den Tastatur-Fokus
-    auf das naechste "Mannschaft"-Dropdown, damit nach "+ Strafe/Tor
-    hinzufügen" ohne Maus direkt weitergearbeitet werden kann.
+    den Tastatur-Fokus auf das erste Feld des naechsten Eintrags, damit ohne
+    Maus direkt weitergearbeitet werden kann.
+
+    ziel "sz_zeit"  -> Eingabefeld "Spielzeit" der Strafzeiten (kommt als
+                       erstes Feld "Spielzeit" auf der Seite vor)
+    ziel "tor_team" -> Dropdown "Mannschaft" im Tore-Abschnitt (das einzige
+                       "Mannschaft"-Dropdown auf der Seite)
 
     Streamlit bietet dafuer KEINEN offiziellen Mechanismus - das ist ein
-    Workaround ueber eingebettetes JavaScript, das im umgebenden
-    Eltern-Dokument nach dem passenden Dropdown sucht (Streamlit rendert
-    Formular-Elemente in einem Iframe, deshalb "window.parent.document").
-    "dropdown_index" waehlt aus, welches der (mehreren) gleich benannten
-    "Mannschaft"-Dropdowns auf der Seite gemeint ist: 0 = Strafzeiten-
-    Abschnitt (kommt zuerst in der Seite vor), 1 = Tore-Abschnitt.
-
-    Bewusst defensiv geschrieben: schlaegt die Suche fehl (z.B. weil eine
-    kuenftige Streamlit-Version die interne DOM-Struktur aendert), passiert
-    einfach nichts - kein Fokus, aber auch kein Fehler. Diese Funktion darf
-    nie die eigentliche Dateneingabe gefaehrden, da sie rein kosmetisch ist.
+    Workaround ueber eingebettetes JavaScript, das im umgebenden Eltern-
+    Dokument nach dem passenden Feld sucht (Streamlit rendert dieses
+    Fragment in einem Iframe, deshalb "window.parent.document"). Bewusst
+    defensiv: schlaegt die Suche fehl (z.B. weil eine kuenftige Streamlit-
+    Version die interne DOM-Struktur aendert), passiert einfach nichts -
+    rein kosmetisch, nie geschaeftskritisch.
     """
+    if ziel == "sz_zeit":
+        suche = """
+            var feld = doc.querySelector('input[aria-label="Spielzeit"]');
+        """
+    else:
+        suche = """
+            var boxen = Array.from(doc.querySelectorAll('div[data-testid="stSelectbox"]'))
+                .filter(function(el) {
+                    var label = el.querySelector('label');
+                    return label && label.innerText.trim() === "Mannschaft";
+                });
+            var feld = boxen.length ? (boxen[0].querySelector('div[role="combobox"]') || boxen[0].querySelector('input')) : null;
+        """
     components.html(
         f"""
         <script>
         setTimeout(function() {{
             try {{
-                const doc = window.parent.document;
-                const boxen = Array.from(doc.querySelectorAll('div[data-testid="stSelectbox"]'))
-                    .filter(function(el) {{
-                        const label = el.querySelector('label');
-                        return label && label.innerText.trim() === "Mannschaft";
-                    }});
-                const ziel = boxen[{dropdown_index}];
-                if (ziel) {{
-                    const feld = ziel.querySelector('div[role="combobox"]') || ziel.querySelector('input');
-                    if (feld) {{ feld.focus(); }}
-                }}
+                var doc = window.parent.document;
+                {suche}
+                if (feld) {{ feld.focus(); }}
             }} catch (e) {{
                 /* rein kosmetisch - darf die App nie stoeren */
             }}
@@ -261,6 +266,30 @@ def bh_fokus_auf_mannschaft_dropdown(dropdown_index: int) -> None:
         """,
         height=0,
     )
+
+
+def bh_spieler_trennen(text: str) -> tuple[str, str]:
+    """Teilt einen Tabelleneintrag "9 – Name" in (Nummer, Name); ohne Nummer -> ("", Text)."""
+    text = (text or "").strip()
+    if text.isdigit():  # nur eine Nummer eingetragen (Freitext ohne Namen)
+        return text, ""
+    if " – " in text:
+        nr, name = text.split(" – ", 1)
+        return nr.strip(), name.strip()
+    return "", text
+
+
+def bh_tore_fuer_export(df: pd.DataFrame) -> pd.DataFrame:
+    """Tore-Tabelle fuer den CSV-Export: Nummer und Name je Spieler in getrennten Spalten."""
+    export = pd.DataFrame()
+    export["Spielzeit"] = df["Spielzeit"]
+    export["Mannschaft"] = df["Mannschaft"]
+    for spalte in ("Torschütze", "Assist 1", "Assist 2"):
+        paare = [bh_spieler_trennen(w) for w in df[spalte].fillna("")]
+        export[f"{spalte} Nr."] = [p[0] for p in paare]
+        export[spalte] = [p[1] for p in paare]
+    export["Spielsituation"] = df["Spielsituation"]
+    return export
 
 
 def bh_karten_zeile(karten: list[tuple[str, str]], spalten: int = 2) -> None:
@@ -321,6 +350,18 @@ def bh_team_wappen_html(team_name: str, logo_url: str | None, groesse: int = 34)
 # ("?seite=strafzeiten"), der (anders als ein reiner #Anker) auch in Python
 # auswertbar ist (st.query_params) und so entscheidet, welcher Inhalt
 # ueberhaupt gerendert wird - nicht nur, wohin gescrollt wird.
+# Automatische Wiederherstellung: beginnt eine NEUE, noch leere Sitzung (z.B.
+# nach F5, Verbindungsabbruch oder Seitenwechsel ueber einen Menue-Link),
+# wird der zuletzt gesicherte Spieltag-Stand (geladenes Spiel, Strafzeiten,
+# Tore, Notizen) zurueckgeholt, statt dass alles verloren ist. Muss VOR dem
+# Rendern der Widgets passieren (siehe sicherung.py).
+if "daten" not in st.session_state and not st.session_state.get("_bh_restore_versucht"):
+    st.session_state["_bh_restore_versucht"] = True
+    _bh_wiederhergestellt_um = sicherung.wiederherstellen(st.session_state)
+    if _bh_wiederhergestellt_um:
+        st.toast(f"Spielstand wiederhergestellt (Sicherung von {_bh_wiederhergestellt_um} Uhr).", icon="💾")
+
+bh_sicherung_hinweis = None
 bh_seite = st.query_params.get("seite", "dashboard")
 if bh_seite not in ("dashboard", "strafzeiten"):
     bh_seite = "dashboard"
@@ -488,6 +529,18 @@ if laden:
 
     # Alles in den Session-State speichern, damit es bei jedem weiteren
     # Klick (Pressefragen/Nachbericht generieren) nicht verloren geht.
+    # Wurde dasselbe Spiel nur AKTUALISIERT (gleiche Paarung, z.B. um den
+    # Spielstand neu zu laden), bleiben alle bisherigen Eintraege erhalten.
+    # Nur bei einer ANDEREN Paarung wird das Protokoll des vorigen Spiels
+    # verworfen.
+    _bh_vorher = st.session_state.get("daten") or {}
+    _bh_gleiches_spiel = (
+        _bh_vorher.get("heimteam") == daten["heimteam"]
+        and _bh_vorher.get("gastteam") == daten["gastteam"]
+    )
+    if not _bh_gleiches_spiel:
+        for _bh_schluessel in ("strafzeiten_df", "tore_df", "sz_bloecke", "sz_notizen", "_bh_notizen"):
+            st.session_state.pop(_bh_schluessel, None)
     st.session_state["daten"] = daten
     st.session_state["gegner"] = gegner
     st.session_state["heim_info"] = heim_info
@@ -496,10 +549,6 @@ if laden:
     st.session_state["naechste_gegner"] = naechste_gegner
     st.session_state["logos"] = logos
     st.session_state["kader"] = kader
-    # Neues Spiel geladen -> alte Strafzeiten-Eintraege vom vorherigen Spiel
-    # verwerfen, damit nicht versehentlich Strafen des falschen Spiels in der
-    # Liste/im Export landen.
-    st.session_state.pop("strafzeiten_df", None)
     # Rohtext ebenfalls merken (nicht nur bei Fehlern) - damit bei Bedarf
     # (z.B. falsch/abgekuerzt ausgelesene Spielernamen) auch nach einem
     # ERFOLGREICHEN Laden noch nachvollzogen werden kann, was auf der Seite
@@ -536,15 +585,19 @@ elif bh_ist_strafzeiten_seite:
     # je ein Flag + welche Rolle (heim/gast) zuletzt aktiv war; das
     # tatsaechliche Zuruecksetzen passiert HIER, ganz am Anfang des naechsten
     # Durchlaufs, BEVOR eines der betroffenen Widgets instanziiert wird.
-    bh_fokus_dropdown_index = None
+    bh_fokus_ziel = None
     if st.session_state.pop("bh_sz_reset_pending", False):
-        sz_reset_rolle = st.session_state.pop("bh_sz_reset_rolle", None)
-        st.session_state["sz_team"] = "– wählen –"
         st.session_state["sz_zeit"] = ""
-        st.session_state["sz_nummer"] = "– wählen –"
-        if sz_reset_rolle is not None:
-            st.session_state[f"sz_nummer_frei_{sz_reset_rolle}"] = ""
-        bh_fokus_dropdown_index = 0
+        for _seite in ("heim", "gast"):
+            st.session_state[f"sz_anzahl_{_seite}"] = 1
+            for _i in range(4):
+                _k = f"{_seite}_{_i}"
+                if f"sz_nr_{_k}" in st.session_state:
+                    st.session_state[f"sz_nr_{_k}"] = "– wählen –"
+                for _frei in (f"sz_nrfrei_{_k}", f"sz_namefrei_{_k}"):
+                    if _frei in st.session_state:
+                        st.session_state[_frei] = ""
+        bh_fokus_ziel = "sz_zeit"
     if st.session_state.pop("bh_tor_reset_pending", False):
         tor_reset_rolle = st.session_state.pop("bh_tor_reset_rolle", None)
         st.session_state["tor_team"] = "– wählen –"
@@ -554,10 +607,10 @@ elif bh_ist_strafzeiten_seite:
         st.session_state["tor_assist1"] = "– kein –"
         st.session_state["tor_assist2"] = "– kein –"
         if tor_reset_rolle is not None:
-            st.session_state[f"tor_torschuetze_frei_{tor_reset_rolle}"] = ""
-            st.session_state[f"tor_assist1_frei_{tor_reset_rolle}"] = ""
-            st.session_state[f"tor_assist2_frei_{tor_reset_rolle}"] = ""
-        bh_fokus_dropdown_index = 1
+            for _slot in ("torschuetze", "assist1", "assist2"):
+                st.session_state[f"tor_{_slot}_frei_{tor_reset_rolle}"] = ""
+                st.session_state[f"tor_{_slot}_nr_frei_{tor_reset_rolle}"] = ""
+        bh_fokus_ziel = "tor_team"
 
     st.markdown('<div id="bh-strafzeiten"></div>', unsafe_allow_html=True)
     st.markdown(
@@ -569,9 +622,17 @@ elif bh_ist_strafzeiten_seite:
         """,
         unsafe_allow_html=True,
     )
+    bh_sicherung_hinweis = st.empty()
+
+    # Notizen: ein Widget-Zustand geht verloren, sobald das Widget einen Durchlauf
+    # lang nicht gerendert wird (z.B. beim Wechsel aufs Dashboard). Deshalb wird
+    # der Text zusaetzlich in einem normalen Schluessel gehalten (und mitgesichert)
+    # und hier wieder in das Feld zurueckgeschrieben.
+    if "sz_notizen" not in st.session_state and st.session_state.get("_bh_notizen"):
+        st.session_state["sz_notizen"] = st.session_state["_bh_notizen"]
 
     with st.container(border=True):
-        st.caption("Während des Spiels erfassen – Team wählen, Nummer wählen, Name wird automatisch ausgefüllt.")
+        st.caption("Während des Spiels erfassen – Spielzeit eintragen, pro Mannschaft die Spieler wählen (bis zu 4), mit einem Klick speichern.")
 
         st.text_area(
             "Sonstige Notizen",
@@ -579,6 +640,7 @@ elif bh_ist_strafzeiten_seite:
             key="sz_notizen",
             height=100,
         )
+        st.session_state["_bh_notizen"] = st.session_state.get("sz_notizen", "")
 
         kader = st.session_state.get("kader", {"heim": {}, "gast": {}})
         kader_heim = kader.get("heim", {})
@@ -661,100 +723,130 @@ elif bh_ist_strafzeiten_seite:
                 st.markdown(f"**Zugeordnet → Heim ({heim}):** {kader_heim or 'nichts'}")
                 st.markdown(f"**Zugeordnet → Gast ({gast}):** {kader_gast or 'nichts'}")
 
-        # WICHTIG: beide Teams sind IMMER waehlbar, unabhaengig davon, ob fuer
-        # sie eine Kaderliste erkannt wurde - sonst laesst sich ein Team gar
-        # nicht mehr auswaehlen, sobald seine Kaderliste (aus welchem Grund
-        # auch immer) nicht sauber eingelesen werden konnte. Fehlt die
-        # Kaderliste eines Teams, wird nur die Nummern-Auswahl fuer dieses
-        # Team deaktiviert (siehe "disabled=not sz_kader_team" unten) - Team
-        # und Spielername lassen sich dann weiterhin frei erfassen.
-        sz_team_optionen = ["– wählen –", heim, gast]
+        # ---------------------------------------------------------------
+        # Strafen-Erfassung: EINE Spielzeit, beide Teams nebeneinander.
+        # Pro Mannschaft bis zu SZ_MAX_ZEILEN Spieler gleichzeitig - so
+        # lassen sich z.B. gegenseitige Strafen oder Strafen gegen mehrere
+        # Spieler zum selben Zeitpunkt mit EINEM Klick speichern. Zeilen
+        # ohne gewaehlten Spieler werden ignoriert (leere Seite = keine
+        # Strafe fuer dieses Team). Je Spieler entsteht eine Tabellenzeile.
+        # Fehlt die Kaderliste eines Teams, werden Nummer und Name dort frei
+        # eingetragen (Fallback wie bisher).
+        # ---------------------------------------------------------------
+        SZ_MAX_ZEILEN = 4
+        SZ_OHNE_NR = "Bank / ohne Nr."
+        SZ_DAUERN = [
+            "2 Minuten",
+            "2+2 Minuten",
+            "5 Minuten",
+            "10 Minuten (Disziplinar)",
+            "20 Minuten (Spieldauer)",
+            "25 Minuten (Matchstrafe)",
+        ]
 
-        sz_spalten = st.columns(3)
-        with sz_spalten[0]:
-            sz_team = st.selectbox("Mannschaft", sz_team_optionen, key="sz_team")
-        sz_rolle = "heim" if sz_team == heim else ("gast" if sz_team == gast else None)
-        sz_kader_team = kader_heim if sz_rolle == "heim" else (kader_gast if sz_rolle == "gast" else {})
-        sz_nummern_optionen = ["– wählen –"] + sorted(sz_kader_team.keys(), key=lambda n: int(n))
+        sz_zeit = st.text_input("Spielzeit", placeholder="z.B. 2. Drittel, 14:32", key="sz_zeit")
 
-        with sz_spalten[1]:
-            if sz_kader_team:
-                sz_nummer = st.selectbox(
-                    "Spielernummer",
-                    sz_nummern_optionen,
-                    key="sz_nummer",
+        sz_eintraege: list[dict] = []
+        sz_fehler: list[str] = []
+        sz_spalten = st.columns(2)
+        for sz_seite, sz_teamname, sz_kader_seite, sz_spalte in (
+            ("heim", heim, kader_heim, sz_spalten[0]),
+            ("gast", gast, kader_gast, sz_spalten[1]),
+        ):
+            with sz_spalte:
+                st.markdown(
+                    f'<div style="font-size:13px; font-weight:600; color:#fff; margin:6px 0 2px 0;">'
+                    f"{sz_teamname}</div>",
+                    unsafe_allow_html=True,
                 )
-            else:
-                # Keine Kaderliste fuer DIESES Team erkannt (z.B. weil die
-                # Nummernzuordnung beim Scrapen fuer diesen Gegner nicht
-                # geklappt hat) - statt eines nur ausgegrauten, nicht
-                # bedienbaren Dropdowns (fruehere Version) wird die Nummer
-                # dann frei eingetragen, damit die Strafe trotzdem erfasst
-                # werden kann. Eigener, vom Team abhaengiger Key, damit beim
-                # Wechsel zwischen Heim/Gast nicht versehentlich die Nummer
-                # des jeweils anderen Teams stehen bleibt.
-                sz_nummer = st.text_input(
-                    "Spielernummer",
-                    placeholder="z.B. 17",
-                    key=f"sz_nummer_frei_{sz_rolle}",
-                    help="Keine Kaderliste für dieses Team erkannt – Nummer bitte frei eintragen.",
-                )
-        sz_nummer = (sz_nummer or "").strip()
-        sz_name_automatisch = sz_kader_team.get(sz_nummer, "")
-        with sz_spalten[2]:
-            # WICHTIG: der Key haengt bewusst von Team+Nummer ab, nicht nur
-            # "sz_name_anzeige" - sonst behaelt das Eingabefeld (wegen
-            # Streamlits eigenem Mechanismus: ein Widget mit festem Key
-            # ignoriert nach dem allerersten Rendern jeden neuen "value"-
-            # Parameter und haelt stattdessen stur an seinem zuletzt
-            # gespeicherten Wert fest) den Namen der VORHERIGEN Auswahl bei,
-            # statt den neu ausgewaehlten Spieler anzuzeigen. Mit einem von
-            # der Auswahl abhaengigen Key entsteht bei jeder neuen Team-/
-            # Nummer-Kombination ein frisches Widget, das zuverlaessig den
-            # dazu passenden Namen zeigt.
-            sz_name = st.text_input(
-                "Spielername",
-                value=sz_name_automatisch,
-                key=f"sz_name_anzeige_{sz_rolle}_{sz_nummer}",
-                disabled=bool(sz_name_automatisch),
-                help="Wird bei bekannter Kaderliste automatisch ausgefüllt, kann sonst frei eingetragen werden.",
-            )
+                sz_anzahl = min(st.session_state.get(f"sz_anzahl_{sz_seite}", 1), SZ_MAX_ZEILEN)
+                for i in range(sz_anzahl):
+                    k = f"{sz_seite}_{i}"
+                    beschriftung = "visible" if i == 0 else "collapsed"
+                    c_nr, c_min, c_grund = st.columns([1, 1.25, 1.75])
+                    with c_nr:
+                        if sz_kader_seite:
+                            sz_nr = st.selectbox(
+                                "Nr.",
+                                ["– wählen –", SZ_OHNE_NR] + sorted(sz_kader_seite.keys(), key=lambda n: int(n)),
+                                key=f"sz_nr_{k}",
+                                label_visibility=beschriftung,
+                            )
+                        else:
+                            sz_nr = st.text_input(
+                                "Nr.",
+                                placeholder="17",
+                                key=f"sz_nrfrei_{k}",
+                                label_visibility=beschriftung,
+                                help="Keine Kaderliste für dieses Team erkannt – Nummer und Name bitte frei eintragen.",
+                            )
+                    with c_min:
+                        sz_dauer = st.selectbox(
+                            "Strafzeit", SZ_DAUERN, key=f"sz_min_{k}", label_visibility=beschriftung
+                        )
+                    with c_grund:
+                        sz_grund_wahl = st.selectbox(
+                            "Grund", STRAFZEITEN_GRUENDE, key=f"sz_grund_{k}", label_visibility=beschriftung
+                        )
 
-        sz_spalten2 = st.columns(3)
-        with sz_spalten2[0]:
-            sz_zeit = st.text_input("Spielzeit", placeholder="z.B. 2. Drittel, 14:32", key="sz_zeit")
-        with sz_spalten2[1]:
-            sz_minuten = st.selectbox(
-                "Strafzeit",
-                [
-                    "2 Minuten",
-                    "2+2 Minuten",
-                    "5 Minuten",
-                    "10 Minuten (Disziplinar)",
-                    "20 Minuten (Spieldauer)",
-                    "25 Minuten (Matchstrafe)",
-                ],
-                key="sz_minuten",
-            )
-        with sz_spalten2[2]:
-            sz_grund_auswahl = st.selectbox(
-                "Grund",
-                STRAFZEITEN_GRUENDE,
-                key="sz_grund_auswahl",
-            )
+                    sz_grund_frei = ""
+                    if sz_grund_wahl == "Sonstiges":
+                        sz_grund_frei = st.text_input(
+                            "Grund (frei eingeben)",
+                            placeholder="z.B. Maskenabsitzen",
+                            key=f"sz_grundfrei_{k}",
+                        )
 
-        sz_grund_sonstiges = ""
-        if sz_grund_auswahl == "Sonstiges":
-            sz_grund_sonstiges = st.text_input(
-                "Grund (frei eingeben)",
-                placeholder="z.B. Maskenabsitzen",
-                key="sz_grund_sonstiges",
-            )
+                    if sz_kader_seite:
+                        sz_nr_wert = "" if sz_nr in ("– wählen –", SZ_OHNE_NR) else sz_nr
+                        sz_name_wert = sz_kader_seite.get(sz_nr_wert, "")
+                        sz_aktiv = sz_nr != "– wählen –"
+                        if sz_name_wert:
+                            st.caption(sz_name_wert)
+                    else:
+                        sz_nr_wert = (sz_nr or "").strip()
+                        sz_name_wert = st.text_input(
+                            "Spielername",
+                            placeholder="Name (optional)",
+                            key=f"sz_namefrei_{k}",
+                            label_visibility="collapsed",
+                        ).strip()
+                        sz_aktiv = bool(sz_nr_wert or sz_name_wert)
+
+                    if sz_aktiv:
+                        sz_grund_text = sz_grund_frei.strip() if sz_grund_wahl == "Sonstiges" else sz_grund_wahl
+                        if sz_grund_wahl == "Sonstiges" and not sz_grund_text:
+                            sz_fehler.append(f"{sz_teamname}: Bitte einen Grund eingeben oder aus der Liste wählen.")
+                        sz_eintraege.append(
+                            {
+                                "Spielzeit": "",  # wird beim Speichern gesetzt
+                                "Mannschaft": sz_teamname,
+                                "Nummer": sz_nr_wert,
+                                "Spieler": sz_name_wert,
+                                "Strafzeit (Min.)": sz_dauer.split(" ")[0],
+                                "Grund": sz_grund_text,
+                            }
+                        )
+
+                if sz_anzahl < SZ_MAX_ZEILEN:
+                    if st.button("+ weiterer Spieler", key=f"sz_mehr_{sz_seite}"):
+                        # Neue Zeile startet mit Strafzeit/Grund der Zeile
+                        # darueber - spart Klicks bei gleichartigen Strafen.
+                        # (Die Widgets der neuen Zeile existieren in diesem
+                        # Durchlauf noch nicht, ihr Wert darf also gesetzt werden.)
+                        k_alt = f"{sz_seite}_{sz_anzahl - 1}"
+                        k_neu = f"{sz_seite}_{sz_anzahl}"
+                        st.session_state[f"sz_min_{k_neu}"] = st.session_state.get(f"sz_min_{k_alt}", SZ_DAUERN[0])
+                        st.session_state[f"sz_grund_{k_neu}"] = st.session_state.get(
+                            f"sz_grund_{k_alt}", STRAFZEITEN_GRUENDE[0]
+                        )
+                        st.session_state[f"sz_anzahl_{sz_seite}"] = sz_anzahl + 1
+                        st.rerun()
 
         sz_knopf_spalten = st.columns([3, 1])
         with sz_knopf_spalten[0]:
             sz_hinzufuegen_geklickt = st.button(
-                "+ Strafe hinzufügen", type="primary", key="sz_hinzufuegen_btn", use_container_width=True
+                "+ Strafen speichern", type="primary", key="sz_hinzufuegen_btn", use_container_width=True
             )
         with sz_knopf_spalten[1]:
             sz_vorhandene_df = st.session_state.get("strafzeiten_df")
@@ -763,54 +855,44 @@ elif bh_ist_strafzeiten_seite:
                 key="sz_rueckgaengig_btn",
                 use_container_width=True,
                 disabled=sz_vorhandene_df is None or sz_vorhandene_df.empty,
-                help="Entfernt den zuletzt hinzugefügten Strafzeiten-Eintrag.",
+                help="Entfernt den zuletzt gespeicherten Strafen-Block (alle Strafen, die zusammen gespeichert wurden).",
             )
 
         if sz_hinzufuegen_geklickt:
-            sz_grund = (
-                sz_grund_sonstiges.strip()
-                if sz_grund_auswahl == "Sonstiges"
-                else sz_grund_auswahl
-            )
-            if sz_team == "– wählen –" or not sz_zeit.strip():
-                st.warning("Bitte mindestens Mannschaft und Spielzeit angeben.")
-            elif sz_grund_auswahl == "Sonstiges" and not sz_grund_sonstiges.strip():
-                st.warning("Bitte einen Grund eingeben oder einen Eintrag aus der Liste wählen.")
+            if not sz_zeit.strip():
+                st.warning("Bitte die Spielzeit angeben.")
+            elif not sz_eintraege:
+                st.warning("Bitte mindestens einen Spieler auswählen (Nummer wählen bzw. eintragen).")
+            elif sz_fehler:
+                st.warning(sz_fehler[0])
             else:
-                neue_zeile = {
-                    "Spielzeit": sz_zeit.strip(),
-                    "Mannschaft": sz_team,
-                    "Nummer": sz_nummer if sz_nummer != "– wählen –" else "",
-                    "Spieler": sz_name.strip(),
-                    "Strafzeit (Min.)": sz_minuten.split(" ")[0],
-                    "Grund": sz_grund,
-                }
+                for eintrag in sz_eintraege:
+                    eintrag["Spielzeit"] = sz_zeit.strip()
+                neue_zeilen = pd.DataFrame(sz_eintraege)
                 bisherige = st.session_state.get("strafzeiten_df")
                 if bisherige is None or bisherige.empty:
-                    st.session_state["strafzeiten_df"] = pd.DataFrame([neue_zeile])
+                    st.session_state["strafzeiten_df"] = neue_zeilen
                 else:
-                    st.session_state["strafzeiten_df"] = pd.concat(
-                        [bisherige, pd.DataFrame([neue_zeile])], ignore_index=True
-                    )
+                    st.session_state["strafzeiten_df"] = pd.concat([bisherige, neue_zeilen], ignore_index=True)
+                # Fuer "Rückgängig": wie viele Zeilen gehoeren zu diesem Block?
+                st.session_state["sz_bloecke"] = list(st.session_state.get("sz_bloecke", [])) + [len(sz_eintraege)]
 
-                # Formular fuer die naechste Eingabe leeren - AUSSER "Strafzeit"
-                # (Minuten) und "Grund": die bleiben bewusst auf der zuletzt
-                # gewaehlten Auswahl stehen (ausdruecklicher Wunsch: in der
-                # Praxis werden oft mehrere gleichartige Strafen kurz hinter-
-                # einander erfasst, z.B. mehrmals "2 Minuten / Haken"). Das
+                # Formular fuer die naechste Eingabe leeren (Spielzeit, Spieler-
+                # Auswahl, zusaetzliche Zeilen). Strafzeit und Grund der ersten
+                # Zeile bleiben bewusst stehen (schnelle Folge-Eingaben). Das
                 # tatsaechliche Zuruecksetzen passiert erst beim naechsten
-                # Durchlauf (siehe Kommentar oben bei "bh_sz_reset_pending") -
-                # hier wird nur das Flag gesetzt, da die Widgets in diesem
-                # Durchlauf schon instanziiert wurden.
+                # Durchlauf (siehe "bh_sz_reset_pending" oben): ein bereits
+                # gerendertes Widget darf im selben Durchlauf nicht mehr
+                # veraendert werden.
                 st.session_state["bh_sz_reset_pending"] = True
-                st.session_state["bh_sz_reset_rolle"] = sz_rolle
                 st.rerun()
 
         if sz_rueckgaengig_geklickt and sz_vorhandene_df is not None and not sz_vorhandene_df.empty:
-            # Letzten Eintrag per iloc[:-1] entfernen - schneller als der Umweg
-            # ueber die editierbare Tabelle unten, gerade bei Fehleingaben
-            # waehrend des hektischen Spielgeschehens.
-            st.session_state["strafzeiten_df"] = sz_vorhandene_df.iloc[:-1].reset_index(drop=True)
+            bloecke = list(st.session_state.get("sz_bloecke", []))
+            anzahl_entfernen = bloecke.pop() if bloecke else 1
+            anzahl_entfernen = max(1, min(anzahl_entfernen, len(sz_vorhandene_df)))
+            st.session_state["strafzeiten_df"] = sz_vorhandene_df.iloc[:-anzahl_entfernen].reset_index(drop=True)
+            st.session_state["sz_bloecke"] = bloecke
             st.rerun()
 
         strafzeiten_df = st.session_state.get(
@@ -951,9 +1033,12 @@ elif bh_ist_strafzeiten_seite:
                     ["– kein –"] + tor_assist2_optionen,
                     key="tor_assist2",
                 )
-            tor_torschuetze_wert = tor_spieler_anzeige.get(tor_torschuetze_anzeige, "")
-            tor_assist1_wert = tor_spieler_anzeige.get(tor_assist1_anzeige, "")
-            tor_assist2_wert = tor_spieler_anzeige.get(tor_assist2_anzeige, "")
+            # In der Tabelle steht der Spieler mit Nummer UND Name ("9 – Jan-Luka
+            # Meissner") - genau wie im Dropdown. Beim CSV-Export werden beide
+            # wieder in getrennte Spalten aufgeteilt.
+            tor_torschuetze_wert = "" if tor_torschuetze_anzeige == "– wählen –" else tor_torschuetze_anzeige
+            tor_assist1_wert = "" if tor_assist1_anzeige == "– kein –" else tor_assist1_anzeige
+            tor_assist2_wert = "" if tor_assist2_anzeige == "– kein –" else tor_assist2_anzeige
             tor_torschuetze_fehlt = tor_torschuetze_anzeige == "– wählen –"
         else:
             # Keine Kaderliste fuer DIESES Team erkannt - Torschuetze/Assists
@@ -961,28 +1046,29 @@ elif bh_ist_strafzeiten_seite:
             # Eigener, vom Team abhaengiger Key (wie bei "sz_nummer_frei_"),
             # damit beim Wechsel zwischen Heim/Gast nicht versehentlich die
             # Namen des jeweils anderen Teams stehen bleiben.
-            with tor_spalten2[0]:
-                tor_torschuetze_wert = st.text_input(
-                    "Torschütze",
-                    placeholder="z.B. 17 Mustermann",
-                    key=f"tor_torschuetze_frei_{tor_rolle}",
-                    help="Keine Kaderliste für dieses Team erkannt – bitte frei eintragen.",
-                )
-            with tor_spalten2[1]:
-                tor_assist1_wert = st.text_input(
-                    "Assist 1",
-                    placeholder="optional",
-                    key=f"tor_assist1_frei_{tor_rolle}",
-                )
-            with tor_spalten2[2]:
-                tor_assist2_wert = st.text_input(
-                    "Assist 2",
-                    placeholder="optional",
-                    key=f"tor_assist2_frei_{tor_rolle}",
-                )
-            tor_torschuetze_wert = (tor_torschuetze_wert or "").strip()
-            tor_assist1_wert = (tor_assist1_wert or "").strip()
-            tor_assist2_wert = (tor_assist2_wert or "").strip()
+            tor_frei_werte = []
+            for _spalte, _label, _slot, _platzhalter in (
+                (tor_spalten2[0], "Torschütze", "torschuetze", "Name"),
+                (tor_spalten2[1], "Assist 1", "assist1", "Name (optional)"),
+                (tor_spalten2[2], "Assist 2", "assist2", "Name (optional)"),
+            ):
+                with _spalte:
+                    _c_nr, _c_name = st.columns([1, 2.4])
+                    with _c_nr:
+                        _nr = st.text_input(
+                            f"{_label} Nr.",
+                            placeholder="Nr.",
+                            key=f"tor_{_slot}_nr_frei_{tor_rolle}",
+                            help="Keine Kaderliste für dieses Team erkannt – Nummer und Name bitte frei eintragen.",
+                        ).strip()
+                    with _c_name:
+                        _name = st.text_input(
+                            _label,
+                            placeholder=_platzhalter,
+                            key=f"tor_{_slot}_frei_{tor_rolle}",
+                        ).strip()
+                    tor_frei_werte.append(f"{_nr} – {_name}" if _nr and _name else (_nr or _name))
+            tor_torschuetze_wert, tor_assist1_wert, tor_assist2_wert = tor_frei_werte
             tor_torschuetze_fehlt = not tor_torschuetze_wert
 
         tor_knopf_spalten = st.columns([3, 1])
@@ -1007,12 +1093,18 @@ elif bh_ist_strafzeiten_seite:
         # Text und muss deshalb hier zusaetzlich geprueft werden - ein
         # Spieler kann pro Tor nur entweder Torschuetze oder (ein) Assist
         # sein, nie beides/mehrfach.
-        tor_beteiligte_werte = [
-            w.strip().lower()
-            for w in (tor_torschuetze_wert, tor_assist1_wert, tor_assist2_wert)
-            if w and w.strip()
-        ]
-        tor_spieler_doppelt = len(tor_beteiligte_werte) != len(set(tor_beteiligte_werte))
+        tor_beteiligte_nummern = []
+        tor_beteiligte_namen = []
+        for _w in (tor_torschuetze_wert, tor_assist1_wert, tor_assist2_wert):
+            _nr_teil, _name_teil = bh_spieler_trennen(_w)
+            if _nr_teil:
+                tor_beteiligte_nummern.append(_nr_teil)
+            if _name_teil:
+                tor_beteiligte_namen.append(_name_teil.lower())
+        tor_spieler_doppelt = (
+            len(tor_beteiligte_nummern) != len(set(tor_beteiligte_nummern))
+            or len(tor_beteiligte_namen) != len(set(tor_beteiligte_namen))
+        )
 
         if tor_hinzufuegen_geklickt:
             if tor_team == "– wählen –" or not tor_zeit.strip():
@@ -1080,7 +1172,7 @@ elif bh_ist_strafzeiten_seite:
         st.session_state["tore_df"] = bearbeitete_tore_df
 
         dateiname_tore = f"tore_{heim}_{gast}.csv".replace(" ", "_")
-        csv_bytes_tore = bearbeitete_tore_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+        csv_bytes_tore = bh_tore_fuer_export(bearbeitete_tore_df).to_csv(index=False, sep=";").encode("utf-8-sig")
         st.download_button(
             "Als Datei herunterladen (.csv)",
             data=csv_bytes_tore,
@@ -1089,11 +1181,11 @@ elif bh_ist_strafzeiten_seite:
             key="tore_download_btn",
         )
 
-    # Komfort-Fokus (siehe bh_fokus_auf_mannschaft_dropdown weiter oben): nur
+    # Komfort-Fokus (siehe bh_fokus_setzen weiter oben): nur
     # auf genau den Formular-Abschnitt anwenden, der gerade zurueckgesetzt
     # wurde - rein kosmetisch, beeinflusst keine Daten.
-    if bh_fokus_dropdown_index is not None:
-        bh_fokus_auf_mannschaft_dropdown(bh_fokus_dropdown_index)
+    if bh_fokus_ziel is not None:
+        bh_fokus_setzen(bh_fokus_ziel)
 else:
     daten = st.session_state["daten"]
     gegner = st.session_state["gegner"]
@@ -1489,6 +1581,16 @@ if not bh_ist_strafzeiten_seite:
     """,
     height=0,
 )
+
+# ---------------------------------------------------------------------------
+# Automatische Sicherung (siehe sicherung.py): nach JEDEM Durchlauf wird der
+# aktuelle Stand gesichert, falls er sich geaendert hat.
+# ---------------------------------------------------------------------------
+_bh_sicherungs_zeit = sicherung.speichern(st.session_state)
+if bh_sicherung_hinweis is not None and _bh_sicherungs_zeit:
+    bh_sicherung_hinweis.caption(
+        f"💾 Automatisch gesichert um {_bh_sicherungs_zeit} Uhr – bleibt bei einer Seitenaktualisierung erhalten."
+    )
 
 # ---------------------------------------------------------------------------
 # Fusszeile
