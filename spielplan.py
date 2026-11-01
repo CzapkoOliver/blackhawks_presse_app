@@ -38,7 +38,12 @@ def hole_sichtbaren_text(url: str) -> str:
         # diesem Zeitpunkt noch gar nicht da war - Ergebnis: 0 erkannte Spiele,
         # obwohl die Seite an sich erreichbar war.
         page.goto(url, timeout=45000)
-        page.wait_for_load_state("networkidle", timeout=15000)
+        # "networkidle" tritt auf DEB LIVE nicht immer ein (Live-Daten laden
+        # staendig nach) - ein Timeout darf deshalb NICHT zum Abbruch fuehren.
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
         page.wait_for_timeout(4000)
         try:
             page.get_by_text("Alle akzeptieren", exact=False).first.click(timeout=3000)

@@ -483,8 +483,16 @@ if laden:
     gegner = daten["gastteam"] if daten["heimteam"] == UNSER_TEAM else daten["heimteam"]
 
     with st.spinner("Lade Spielplan ..."):
-        plan_text = spielplan.hole_sichtbaren_text(spielplan.SPIELPLAN_URL)
-        alle_spiele = spielplan.parse_spielplan(plan_text)
+        # Der Spielplan ist nur Zusatzinformation: scheitert er (Timeout,
+        # Seite langsam), laeuft die App mit den restlichen Daten weiter.
+        plan_text = ""
+        for _versuch in range(2):
+            try:
+                plan_text = spielplan.hole_sichtbaren_text(spielplan.SPIELPLAN_URL)
+                break
+            except Exception:
+                plan_text = ""
+        alle_spiele = spielplan.parse_spielplan(plan_text) if plan_text else []
     # Rohtext merken (nicht nur bei Fehlern) - damit bei "0 Spiele erkannt"
     # genau nachvollzogen werden kann, was Playwright auf der Spielplan-Seite
     # tatsaechlich gesehen hat (siehe Diagnose-Hinweis unten bei "Naechste
