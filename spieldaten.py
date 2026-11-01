@@ -514,6 +514,29 @@ def kader_pro_team(
     return ergebnis
 
 
+def _ist_anpfiff_uhrzeit(teil1: str, teil2: str, status: str) -> bool:
+    """
+    True, wenn "teil1:teil2" vermutlich die Anpfiff-Uhrzeit (HH:MM) und nicht
+    ein Spielstand ist. Uhrzeiten haben immer zweistellige Minuten und Stunden <= 23;
+    echte Spielstaende sind nie nullgepolstert und selten beidseitig zweistellig.
+    """
+    if len(teil2) != 2 or not teil1.isdigit() or not teil2.isdigit():
+        return False
+    if int(teil1) > 23 or int(teil2) > 59:
+        return False
+    status_l = status.lower()
+    if any(w in status_l for w in ("beginn", "geplant", "anstehend", "noch nicht", "vor dem spiel", "anpfiff")):
+        return True
+    if len(teil1) == 2:
+        if teil2.startswith("0"):
+            return True
+        laufend = ("beendet", "drittel", "verl", "penalty", "shootout", "pause", "spielzeit", "minute")
+        if status_l == "spiel" or any(w in status_l for w in laufend):
+            return False
+        return True
+    return False
+
+
 def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
     """
     Sucht im rohen Seitentext des "Spielbericht"-Reiters nach den benoetigten
@@ -595,7 +618,16 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
         if not status_kandidat:
             continue
 
-        daten["endergebnis"] = f"{ergebnis_match.group(1)}:{ergebnis_match.group(2)}"
+        ist_uhrzeit = _ist_anpfiff_uhrzeit(
+            ergebnis_match.group(1), ergebnis_match.group(2), status_kandidat
+        )
+        if ist_uhrzeit:
+            # Vor Spielbeginn zeigt DEB LIVE statt des Ergebnisses die Uhrzeit
+            # des Anpfiffs (z.B. "19:30"). Das ist KEIN Spielstand.
+            daten["endergebnis"] = "0:0"
+            daten["anpfiff_uhrzeit"] = f"{ergebnis_match.group(1)}:{ergebnis_match.group(2)}"
+        else:
+            daten["endergebnis"] = f"{ergebnis_match.group(1)}:{ergebnis_match.group(2)}"
         daten["heimteam"] = heimteam_kandidat
         daten["gastteam"] = gastteam_kandidat
 

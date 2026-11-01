@@ -9,7 +9,7 @@ Fuehrt alle Bausteine zusammen:
 - trainer_lookup.py   -> Nationalitaet/Sprache der Trainer
 - fragen_generator.py -> Pressekonferenz-Fragen per Claude API (zweisprachig bei Bedarf)
 - live_uebersetzer.py -> Live-Untertitel Englisch <-> Deutsch (beide Richtungen) waehrend der Pressekonferenz
-- nachbericht_generator.py -> Druckfertiger Nachbericht (Headline, Text, O-Ton, Statistik)
+- nachbericht_generator.py -> Druckfertiger Nachbericht (Headline, Fliesstext mit integrierten O-Toenen, Statistik)
 - nachbericht_docx.py      -> Export des Nachberichts als Word-Datei (.docx)
 
 Die Vereinsfarben (Schwarz, Rot, Weiss) werden ueber .streamlit/config.toml
@@ -1396,13 +1396,13 @@ else:
                 st.markdown('<div id="bh-nachbericht"></div>', unsafe_allow_html=True)
                 st.caption(
                     "Erstellt aus den obigen Spieldaten einen druckfertigen Nachbericht "
-                    "(Headline, Text, O-Ton, Statistik). Die Live-Übersetzung läuft "
+                    "(Headline, Fließtext mit integrierten O-Tönen, Statistik am Ende). Die Live-Übersetzung läuft "
                     "ausschließlich im Browser - die App weiß deshalb nicht automatisch, "
                     "wer gerade spricht. Bitte die gewünschten, bereits übersetzten Zitate "
                     "unten manuell aus dem Live-Übersetzer rechts (Feld 'Transkript als "
-                    "Text') in das passende Feld einfügen. Leer gelassene Felder werden "
-                    "im O-Ton-Abschnitt als noch zu ergänzen markiert - Claude erfindet "
-                    "keine Aussagen."
+                    "Text') in das passende Feld einfügen. Die Zitate werden in den "
+                    "Fließtext eingebaut; ohne Zitate entsteht der Bericht allein aus den "
+                    "Spieldaten - Claude erfindet keine Aussagen."
                 )
 
                 # Diagnose-Bereich, falls Spielernamen falsch/abgekuerzt erscheinen

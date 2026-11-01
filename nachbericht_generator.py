@@ -5,7 +5,7 @@ Erstellt aus den Spieldaten (und optional den bereits ins Deutsche
 uebersetzten Pressekonferenz-Zitaten aus live_uebersetzer.py) einen
 druckfertigen Nachbericht fuer die Presse - im gewohnten Format:
 Sperrfrist, Headline, Fliesstext mit den wichtigsten Entwicklungen,
-O-Ton, Statistik.
+Fliesstext (mit eingebauten O-Toenen), Statistik am Ende.
 
 WICHTIG zu den Zitaten (O-Ton):
 Die Live-Uebersetzung laeuft komplett im Browser (siehe live_uebersetzer.py)
@@ -14,7 +14,7 @@ Deshalb werden hier bewusst KEINE Zitate von Claude erfunden oder
 Personen zugeordnet - stattdessen kopiert der Nutzer die gewuenschten,
 bereits uebersetzten Saetze selbst aus dem Live-Uebersetzer-Transkript
 in das Zitate-Feld (Format "Name: Zitat" pro Zeile). Nur diese vom
-Nutzer bereitgestellten Zitate werden fuer den O-Ton-Abschnitt verwendet.
+Nutzer bereitgestellten Zitate werden in den Fliesstext eingebaut.
 
 Benoetigt eine Datei ".env" im selben Ordner mit der Zeile:
 ANTHROPIC_API_KEY=dein-schluessel-hier
@@ -156,19 +156,28 @@ def _baue_prompt(
     sperrfrist: str,
 ) -> str:
     zitate_hinweis = (
-        f"Folgende, bereits vom Nutzer ausgewaehlte und ins Deutsche uebersetzte "
-        f"Original-Zitate aus der Pressekonferenz sollen im O-Ton-Abschnitt "
-        f"verwendet werden (Format ist 'Name: Zitat' je Zeile):\n{zitate_text.strip()}"
+        "Folgende, bereits vom Nutzer ausgewaehlte und ins Deutsche uebersetzte "
+        "Original-Zitate aus der Pressekonferenz stehen zur Verfuegung "
+        f"(Format ist 'Name: Zitat' je Zeile):\n{zitate_text.strip()}"
         if zitate_text.strip()
         else "Es wurden diesmal KEINE Zitate uebergeben."
     )
 
-    return f"""Du bist ein erfahrener Pressesprecher eines deutschen Eishockey-
-Oberligisten und schreibst einen Nachbericht fuer die Presse direkt nach dem Spiel.
+    anpfiff = spieldaten.get("anpfiff_uhrzeit")
+    anpfiff_zeile = f"- Anpfiff: {anpfiff} Uhr\n" if anpfiff else ""
+
+    return f"""Du bist ein langjaehriger Sportredakteur mit sehr grosser Erfahrung im
+Eishockey (Oberliga, DEL2, DEL, internationale Turniere). Du kennst das Spiel,
+seine Taktik und seine Sprache, schreibst praezise, lebendig und fundiert und
+hast einen sicheren Blick fuer Wendepunkte und Spielcharakter. Du schreibst
+den Nachbericht zu einem Heimspiel der EHF Passau Black Hawks. Der Text muss
+sowohl auf der Vereinswebsite und in den Vereinskanaelen als auch von der
+Tagespresse unveraendert druckbar sein: sachlich fair gegenueber dem Gegner,
+mit erkennbarer Naehe zum Heimteam, ohne Floskelkitsch und ohne Polemik.
 
 SPIELDATEN:
 - {spieldaten['heimteam']} {spieldaten['endergebnis']} {spieldaten['gastteam']}
-- Zuschauer: {spieldaten['zuschauer']}
+{anpfiff_zeile}- Zuschauer: {spieldaten['zuschauer']}
 - Schuesse aufs Tor: {spieldaten['heimteam']} {spieldaten['schuesse_heim']} : {spieldaten['schuesse_gast']} {spieldaten['gastteam']}
 - Strafminuten: {spieldaten['heimteam']} {spieldaten['strafminuten_heim']} : {spieldaten['strafminuten_gast']} {spieldaten['gastteam']}
 - Torfolge pro Drittel (Heim:Gast): {_drittel_text(spieldaten.get('torfolge_pro_drittel'))}
@@ -178,59 +187,50 @@ SPIELDATEN:
 - Trainer {spieldaten['heimteam']}: {spieldaten['trainer_heim']} ({heim_info['nationalitaet']})
 - Trainer {spieldaten['gastteam']}: {spieldaten['trainer_gast']} ({gast_info['nationalitaet']})
 
-ZITATE (O-Ton):
+ZITATE (O-Toene):
 {zitate_hinweis}
 
 AUFGABE:
-Schreibe einen professionellen, druckfertigen Nachbericht nach klassischem
-Sportjournalismus-Stil (aehnlich einer dpa-Spielzusammenfassung). Beziehe
-dich ausschliesslich auf die oben angegebenen echten Spieldaten - erfinde
-KEINE zusaetzlichen Spielsituationen, Torschuetzen oder Ereignisse, die
-nicht aus den Daten hervorgehen. Uebernimm ALLE Spieler- und Trainernamen
-EXAKT buchstabengetreu aus der Torchronologie bzw. den Trainerangaben oben -
-NIEMALS einen Vornamen aendern, "korrigieren" oder durch einen aehnlich
-klingenden, gebraeuchlicheren Namen ersetzen (Beispiel: Steht "Grady Hobbs"
-in der Torchronologie, schreibe IMMER "Grady Hobbs" - niemals "Grant Hobbs"
-oder eine andere Variante). Schreibe den Vornamen JEDES Mal VOLLSTAENDIG
-aus, wenn ein Spieler oder Trainer im Fliesstext genannt wird - VERWENDE
-NIEMALS Abkuerzungen wie "G. Hobbs" oder nur den Nachnamen allein, auch
-nicht bei Wiederholungen oder um Wiederholungen zu vermeiden. Gehe im
-Fliesstext insbesondere auf den
-Spielverlauf ein (starker/schwacher Start, Wendepunkte zwischen den
-Dritteln, spannende Schlussphase falls das Ergebnis knapp war oder wurde,
-Schussverhaeltnis, Disziplin/Strafminuten falls auffaellig).
+Schreibe einen druckfertigen Spielbericht im Stil eines erfahrenen
+Sportredakteurs. Beziehe dich ausschliesslich auf die oben angegebenen echten
+Daten - erfinde KEINE Spielsituationen, Torschuetzen, Vorlagen, Strafen oder
+sonstigen Ereignisse, die nicht aus den Daten hervorgehen. Deute den
+Spielverlauf aus den Daten (Start, Wendepunkte zwischen den Dritteln,
+Schlussphase, Schussverhaeltnis, Disziplin/Strafminuten) und ordne ihn
+fachkundig ein, ohne dabei Details zu behaupten, die die Daten nicht belegen.
 
-Falls oben unter "ZITATE" tatsaechlich Zitate uebergeben wurden: Nutze
-zusaetzlich deren INHALTLICHE Aussage (z.B. Einschaetzung zum Spielverlauf,
-zu einzelnen Phasen, zur eigenen oder gegnerischen Leistung), um die
-Fliesstext-Absaetze realistischer und einordnender zu schreiben - so wie es
-ein Reporter tut, der die Pressekonferenz tatsaechlich gehoert hat. Verwende
-dabei im Fliesstext NICHT den woertlichen Zitat-Text selbst (der bleibt dem
-O-Ton-Abschnitt vorbehalten, siehe Regel unten), sondern nur die Einordnung/
-Bewertung, die daraus hervorgeht (z.B. "Coach XY fuehrte den Sieg auf ...
-zurueck" statt das Zitat zu wiederholen). Wurden KEINE Zitate uebergeben,
-schreibe den Fliesstext wie gewohnt ausschliesslich anhand der Spieldaten -
-das ist ein voellig normaler, gueltiger Fall und kein Mangel.
+NAMEN: Uebernimm ALLE Spieler- und Trainernamen EXAKT buchstabengetreu aus der
+Torchronologie bzw. den Trainerangaben - NIEMALS einen Vornamen aendern,
+"korrigieren" oder durch einen aehnlich klingenden Namen ersetzen (Steht
+"Grady Hobbs" da, schreibe IMMER "Grady Hobbs", nie "Grant Hobbs"). Schreibe
+bei JEDER Nennung den Vornamen VOLLSTAENDIG aus; niemals Abkuerzungen wie
+"G. Hobbs" und niemals den Nachnamen allein, auch nicht bei Wiederholungen.
+Variiere stattdessen mit Formulierungen wie "der Stuermer", "der Torschuetze",
+"der Kapitaen" nur, wenn die Daten diese Funktion belegen.
 
-Fuer den O-Ton-Abschnitt gilt eine STRENGE Regel: Verwende AUSSCHLIESSLICH
-die oben unter "ZITATE" aufgefuehrten, vom Nutzer bereitgestellten Zitate -
-wortwoertlich oder nur leicht sprachlich geglaettet, aber inhaltlich
-unveraendert und mit der jeweils angegebenen Namenszuordnung. Erfinde
-NIEMALS eigene Zitate oder ordne eine Aussage einer Person zu, fuer die
-kein Zitat uebergeben wurde. Falls keine Zitate uebergeben wurden, schreibe
-im O-Ton-Abschnitt stattdessen woertlich: "Noch keine Zitate erfasst - bitte
-Original-Aussagen aus dem Live-Uebersetzer-Transkript ergaenzen." und
-erfinde nichts.
+O-TOENE IM FLIESSTEXT: Falls oben Zitate uebergeben wurden, baue sie direkt in
+den Fliesstext ein, dort wo sie inhaltlich passen (z.B. die Trainereinschaetzung
+zur Entscheidung im Mitteldrittel am Ende des entsprechenden Absatzes oder
+zum Schluss). Wie in einem Zeitungsbericht: woertliches Zitat in
+Anfuehrungszeichen, mit Namen und Funktion des Sprechers (z.B. Trainer des
+Gegners), sauber in den Satz eingebettet ("..., sagte Trainer Vorname
+Nachname." oder "'...', betonte ..."). Verwende AUSSCHLIESSLICH die
+uebergebenen Zitate - woertlich oder nur leicht sprachlich geglaettet, inhaltlich
+unveraendert und mit der angegebenen Namenszuordnung. Erfinde NIEMALS Zitate,
+Paraphrasen in Anfuehrungszeichen oder Aussagen von Personen, fuer die kein Zitat
+uebergeben wurde. Es gibt KEINEN separaten O-Ton-Abschnitt. Wurden keine Zitate
+uebergeben, schreibe den Bericht ausschliesslich aus den Spieldaten; das ist ein
+normaler Fall - weise im Text nicht darauf hin und fuege keinen Platzhalter ein.
 
 FORMAT (genau in dieser Reihenfolge, als Markdown):
 1. Eine Zeile "Sperrfrist bis: {sperrfrist or 'keine'}"
-2. Eine kurze, reisserische Vorzeile (Kicker) als "**<Vorzeile>**" (z.B. Ergebnis-
+2. Eine kurze Vorzeile (Kicker) als "**<Vorzeile>**" (z.B. eine Ergebnis-
    Einordnung wie "Heimsieg mit Nervenkitzel:"), danach in der naechsten Zeile
    die Haupt-Headline als "# <Headline>" (z.B. "Black Hawks schlagen {spieldaten['gastteam']} {spieldaten['endergebnis']}").
-3. 3-5 Fliesstext-Absaetze mit den wichtigsten Entwicklungen des Spiels.
-4. Abschnitt "## O-Ton" mit den Zitaten (siehe Regel oben), jeweils als
-   eigener Absatz im Format "**Name:** \"Zitat\"".
-5. Abschnitt "## Statistik" mit GENAU diesen Zeilen, jede als eigener Absatz
+3. 4-6 Fliesstext-Absaetze: ein Einstieg (Lead) mit Ergebnis und Kernaussage,
+   dann der Spielverlauf Drittel fuer Drittel, die Entscheidung, am Ende
+   Ausblick oder Fazit. Die O-Toene (falls vorhanden) sind hierin integriert.
+4. Abschnitt "## Statistik" mit GENAU diesen Zeilen, jede als eigener Absatz
    und IN DIESER REIHENFOLGE (keine zusaetzlichen Zeilen dazwischen):
    - "**{spieldaten['heimteam']} -- {spieldaten['gastteam']}**" (fett)
    - "Tore: " gefolgt von jedem Tor als "Spielstand Torschuetze (Minute)",
@@ -271,6 +271,9 @@ def generiere_nachbericht(
             "Streamlit-Cloud-App-Einstellungen unter 'Secrets' hinterlegen."
         )
 
+    # Haeufiger Fehler beim Einfuegen in die Streamlit-Secrets: Leerzeichen,
+    # Zeilenumbruch oder Anfuehrungszeichen um den Schluessel herum.
+    api_key = api_key.strip().strip('"').strip("'")
     client = Anthropic(api_key=api_key)
     prompt = _baue_prompt(spieldaten, heim_info, gast_info, zitate_text, sperrfrist)
 
@@ -280,11 +283,30 @@ def generiere_nachbericht(
     # kamen (laengerer O-Ton-Abschnitt + die Zitate fliessen zusaetzlich in
     # den Fliesstext ein) - die Antwort wurde dann mitten im Satz
     # abgeschnitten. Deshalb hier grosszuegiger bemessen.
-    antwort = client.messages.create(
-        model=MODELL,
-        max_tokens=6000,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        antwort = client.messages.create(
+            model=MODELL,
+            max_tokens=6000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as fehler:  # lesbare Meldung statt anonymem Streamlit-Fehler
+        status = getattr(fehler, "status_code", None)
+        if status == 401:
+            hinweis = (
+                "API-Schluessel ungueltig oder abgelaufen (401). Bitte in den "
+                "Streamlit-Secrets pruefen, ob der NEUE Schluessel vollstaendig "
+                "und ohne Leerzeichen/Zeilenumbruch eingetragen ist, und die "
+                "App danach neu starten (Reboot app)."
+            )
+        elif status == 403:
+            hinweis = "Der Schluessel hat keine Berechtigung fuer dieses Modell oder diesen Workspace (403)."
+        elif status == 404:
+            hinweis = f"Modell '{MODELL}' wurde von der API nicht gefunden (404)."
+        elif status == 429:
+            hinweis = "Rate-Limit oder Ausgabenlimit des Schluessels erreicht (429)."
+        else:
+            hinweis = "Unerwarteter Fehler beim Aufruf der Claude-API."
+        return f"Nachbericht konnte nicht erstellt werden: {hinweis}\n\nTechnische Details: {type(fehler).__name__}: {fehler}"
 
     text_bloecke = [block.text for block in antwort.content if block.type == "text"]
     if not text_bloecke:
