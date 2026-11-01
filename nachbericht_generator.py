@@ -45,21 +45,37 @@ def _drittel_text(torfolge: dict | None) -> str:
     return ", ".join(teile)
 
 
-def _tore_text(tore_liste: list | None) -> str:
+def _minute(zeit: str) -> str:
+    """"05:03" -> "6." (Tor faellt in der 6. Spielminute, wie im Eishockey ueblich)."""
+    try:
+        minuten = int(zeit.split(":")[0])
+        return f"{minuten + 1}."
+    except Exception:
+        return zeit
+
+
+def _tore_text(tore_liste: list | None, heimteam: str = "Heim", gastteam: str = "Gast") -> str:
     if not tore_liste:
         return "nicht verfuegbar"
     zeilen = []
     for tor in tore_liste:
-        # Bevorzugt den sauber herausgeloesten Torschuetzen-Namen (z.B.
+        # Bevorzugt den sauber aufgeloesten Torschuetzen-Namen (z.B.
         # "Grady Hobbs") statt des rohen Seitentexts - das reduziert das
         # Risiko, dass Claude beim Formulieren einen Vornamen vertauscht.
         if tor.get("torschuetze"):
+            team = heimteam if tor.get("team") == "heim" else gastteam if tor.get("team") == "gast" else ""
             info = f" - {tor['torschuetze']}"
+            if team:
+                info += f" ({team})"
+            if tor.get("spielart") and tor["spielart"] != "EQ":
+                info += f" [{tor['spielart']}]"
+            if tor.get("assists"):
+                info += f", Vorlagen: {', '.join(tor['assists'])}"
         elif tor.get("info"):
             info = f" - {tor['info']}"
         else:
             info = ""
-        zeilen.append(f"{tor['stand']} ({tor['zeit']}, {tor['drittel']}. Drittel){info}")
+        zeilen.append(f"{tor['stand']} ({_minute(tor['zeit'])} Minute, {tor['drittel']}. Drittel){info}")
     return "; ".join(zeilen)
 
 
@@ -181,11 +197,11 @@ SPIELDATEN:
 - Schuesse aufs Tor: {spieldaten['heimteam']} {spieldaten['schuesse_heim']} : {spieldaten['schuesse_gast']} {spieldaten['gastteam']}
 - Strafminuten: {spieldaten['heimteam']} {spieldaten['strafminuten_heim']} : {spieldaten['strafminuten_gast']} {spieldaten['gastteam']}
 - Torfolge pro Drittel (Heim:Gast): {_drittel_text(spieldaten.get('torfolge_pro_drittel'))}
-- Torchronologie: {_tore_text(spieldaten.get('tore_liste'))}
+- Torchronologie: {_tore_text(spieldaten.get('tore_liste'), spieldaten['heimteam'], spieldaten['gastteam'])}
 - Schiedsrichter: {spieldaten['schiedsrichter']}
 - Linienrichter: {spieldaten['linienrichter']}
-- Trainer {spieldaten['heimteam']}: {spieldaten['trainer_heim']} ({heim_info['nationalitaet']})
-- Trainer {spieldaten['gastteam']}: {spieldaten['trainer_gast']} ({gast_info['nationalitaet']})
+- Trainer {spieldaten['heimteam']}: {spieldaten.get('trainer_heim_name') or spieldaten['trainer_heim']} ({heim_info['nationalitaet']})
+- Trainer {spieldaten['gastteam']}: {spieldaten.get('trainer_gast_name') or spieldaten['trainer_gast']} ({gast_info['nationalitaet']})
 
 ZITATE (O-Toene):
 {zitate_hinweis}
@@ -234,7 +250,8 @@ FORMAT (genau in dieser Reihenfolge, als Markdown):
    und IN DIESER REIHENFOLGE (keine zusaetzlichen Zeilen dazwischen):
    - "**{spieldaten['heimteam']} -- {spieldaten['gastteam']}**" (fett)
    - "Tore: " gefolgt von jedem Tor als "Spielstand Torschuetze (Minute)",
-     getrennt durch "; " (z.B. "1:0 Leonard Mössinger (5.); 2:0 Grady Hobbs (19.)"),
+     getrennt durch "; " (z.B. "1:0 Leonard Mössinger (5.); 2:0 Grady Hobbs (19.)" - die Minute
+     steht in der Torchronologie oben bereits fertig berechnet),
      nur falls die Torchronologie oben verfuegbar ist - sonst diese Zeile weglassen.
    - "Zuschauer: {spieldaten['zuschauer']}"
    - "Schiedsrichter: {spieldaten['schiedsrichter']}"

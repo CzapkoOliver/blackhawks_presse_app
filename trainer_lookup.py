@@ -8,7 +8,7 @@ passende Zeile - unabhaengig von der Reihenfolge von Vor- und Nachname.
 
 import csv
 
-TRAINER_DATEI = "trainer.csv"
+TRAINER_DATEI = str(__import__("pathlib").Path(__file__).resolve().parent / "trainer.csv")
 
 
 def normalisieren(name: str) -> frozenset:

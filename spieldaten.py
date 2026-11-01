@@ -514,6 +514,93 @@ def kader_pro_team(
     return ergebnis
 
 
+_GS_CODE = re.compile(r"^(EQ|PP\d?|SH\d?|EN|PS|PEN|\d[vV]\d)$")
+_SPIELER_MIT_NR = re.compile(r"^(.+?)\s*\((\d+)\)$")
+
+
+def _namen_umdrehen(name: str | None) -> str | None:
+    """"REJA DANIEL" -> "Daniel Reja" (DEB LIVE schreibt Nachname zuerst, in Grossbuchstaben)."""
+    if not name:
+        return name
+    teile = name.split()
+    if len(teile) < 2:
+        return name.title()
+    if name.isupper():
+        # komplett gross ("REJA DANIEL"): erstes Wort = Nachname
+        nachname, vorname = teile[0], " ".join(teile[1:])
+    else:
+        # gemischt ("HOBBS Grady"): Grossgeschriebene Woerter = Nachname
+        nachname = " ".join(t for t in teile if t.isupper() and len(t) > 1) or teile[0]
+        vorname = " ".join(t for t in teile if not (t.isupper() and len(t) > 1)) or teile[-1]
+    return f"{vorname.title()} {nachname.title()}"
+
+
+def reichere_tore_an(daten: dict, kader: dict, roster_text: str = "") -> dict:
+    """
+    Loest die Torschuetzen/Vorlagen der TORE-Tabelle ("ROY H. (78)") ueber
+    Mannschaft + Rueckennummer in volle Namen ("Harrison Roy") auf und legt je
+    Tor die Felder "team" (heim/gast), "torschuetze", "assists" an.
+    Die Mannschaft ergibt sich aus der Spielstand-Aenderung (wer hat getroffen),
+    nicht aus Kuerzeln. Ausserdem wird "spieler_namen" aus dem Kader neu
+    aufgebaut und gleichnamige Spieler (z.B. zwei "Jackson") werden dabei
+    ausgeschlossen, damit sie im Nachbericht nicht vertauscht werden.
+    """
+    kader = kader or {}
+    tore = daten.get("tore_liste") or []
+    letzter = [0, 0]
+
+    def _name(seite: str, nr: str, roh: str) -> str:
+        voll = (kader.get(seite) or {}).get(nr)
+        if voll:
+            return voll
+        # Rueckfall: "ROY H." -> bleibt erkennbar, aber ohne erfundenen Vornamen
+        teile = roh.split()
+        nachname = " ".join(t for t in teile if len(t.strip(".")) > 1).title()
+        initial = next((t for t in teile if len(t.strip(".")) == 1), "")
+        return f"{initial} {nachname}".strip() if initial else nachname
+
+    for tor in tore:
+        try:
+            heim, gast = (int(x) for x in tor["stand"].split(":"))
+        except Exception:
+            continue
+        seite = "heim" if heim > letzter[0] else "gast"
+        letzter = [heim, gast]
+        tokens = [t.strip() for t in (tor.get("info") or "").split("\t") if t.strip()]
+        personen = []
+        gs_index = next((i for i, t in enumerate(tokens) if _GS_CODE.match(t)), None)
+        if gs_index is not None:
+            for t in tokens[gs_index + 2:]:
+                m = _SPIELER_MIT_NR.match(t)
+                if not m:
+                    break
+                personen.append((m.group(1), m.group(2)))
+        tor["team"] = seite
+        tor["spielart"] = tokens[gs_index] if gs_index is not None else None
+        if personen:
+            tor["torschuetze"] = _name(seite, personen[0][1], personen[0][0])
+            tor["torschuetze_nr"] = personen[0][1]
+            tor["assists"] = [_name(seite, nr, roh) for roh, nr in personen[1:3]]
+
+    # Eindeutiges Nachnamen-Verzeichnis aus dem Kader (nur wenn der Nachname
+    # im ganzen Spiel genau einmal vorkommt).
+    alle = [n for seite in ("heim", "gast") for n in (kader.get(seite) or {}).values()]
+    zaehler: dict[str, int] = {}
+    for n in alle:
+        nachname = n.rsplit(" ", 1)[-1]
+        zaehler[nachname] = zaehler.get(nachname, 0) + 1
+    if alle:
+        daten["spieler_namen"] = {
+            n.rsplit(" ", 1)[-1]: n.rsplit(" ", 1)[0]
+            for n in alle
+            if zaehler[n.rsplit(" ", 1)[-1]] == 1 and " " in n
+        }
+    daten["trainer_heim_name"] = _namen_umdrehen(daten.get("trainer_heim"))
+    daten["trainer_gast_name"] = _namen_umdrehen(daten.get("trainer_gast"))
+    return daten
+
+
+
 def _ist_ticker_eintrag(wert: str) -> bool:
     """
     True fuer Platzhalter/Kuerzel aus der Spieltags-Leiste: "-", leere Werte

@@ -530,6 +530,9 @@ if laden:
     # zuordnen - wird fuer die Strafzeiten-Erfassung gebraucht (Dropdowns
     # "Mannschaft" -> "Spielernummer" -> automatisch ausgefuellter Name).
     kader = spieldaten.kader_pro_team(kader_rohdaten, daten["heimteam"], daten["gastteam"])
+    # Torschuetzen/Vorlagen der Torchronologie ueber Mannschaft + Rueckennummer
+    # in volle Namen aufloesen, Trainernamen in "Vorname Nachname" umdrehen.
+    daten = spieldaten.reichere_tore_an(daten, kader)
     # Rohdaten der Kaderliste merken (je Button-Kuerzel ein Textblock) -
     # koennen im Strafzeiten-Bereich jederzeit zur Fehlersuche eingesehen
     # werden, nicht nur wenn die Zuordnung komplett leer blieb.
@@ -1443,8 +1446,8 @@ else:
                     key="nachbericht_sperrfrist",
                 )
 
-                trainer_heim_name = daten["trainer_heim"] or f"Trainer {heim}"
-                trainer_gast_name = daten["trainer_gast"] or f"Trainer {gast}"
+                trainer_heim_name = daten.get("trainer_heim_name") or daten["trainer_heim"] or f"Trainer {heim}"
+                trainer_gast_name = daten.get("trainer_gast_name") or daten["trainer_gast"] or f"Trainer {gast}"
 
                 spalte_zitat_heim, spalte_zitat_gast = st.columns(2)
                 with spalte_zitat_heim:

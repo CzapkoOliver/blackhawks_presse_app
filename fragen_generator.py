@@ -59,8 +59,8 @@ SPIELDATEN:
 - Strafminuten: {spieldaten['heimteam']} {spieldaten['strafminuten_heim']} : {spieldaten['strafminuten_gast']} {spieldaten['gastteam']}
 - Torfolge pro Drittel (Heim:Gast): {drittel_text(spieldaten.get('torfolge_pro_drittel'))}
 - Schiedsrichter: {spieldaten['schiedsrichter']}
-- Trainer {spieldaten['heimteam']}: {spieldaten['trainer_heim']} ({heim_info['nationalitaet']})
-- Trainer {spieldaten['gastteam']}: {spieldaten['trainer_gast']} ({gast_info['nationalitaet']})
+- Trainer {spieldaten['heimteam']}: {spieldaten.get('trainer_heim_name') or spieldaten['trainer_heim']} ({heim_info['nationalitaet']})
+- Trainer {spieldaten['gastteam']}: {spieldaten.get('trainer_gast_name') or spieldaten['trainer_gast']} ({gast_info['nationalitaet']})
 - Naechste Spiele {spieldaten['heimteam']}: {spiele_text(naechste_heim)}
 - Naechste Spiele {spieldaten['gastteam']}: {spiele_text(naechste_gast)}
 
