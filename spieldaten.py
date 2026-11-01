@@ -514,6 +514,17 @@ def kader_pro_team(
     return ergebnis
 
 
+def _ist_ticker_eintrag(wert: str) -> bool:
+    """
+    True fuer Platzhalter/Kuerzel aus der Spieltags-Leiste: "-", leere Werte
+    oder ein kurzes Gross-Kuerzel ohne Leerzeichen (STR, HEC, ESVK, ...).
+    """
+    w = wert.strip()
+    if w in ("", "-", "–", "—"):
+        return True
+    return len(w) <= 5 and " " not in w and w.isupper() and w.isalpha()
+
+
 def _ist_anpfiff_uhrzeit(teil1: str, teil2: str, status: str) -> bool:
     """
     True, wenn "teil1:teil2" vermutlich die Anpfiff-Uhrzeit (HH:MM) und nicht
@@ -616,6 +627,20 @@ def parse_spielbericht(text: str, text_spielverlauf: str = "") -> dict:
         if not _wirkt_wie_teamname(heimteam_kandidat) or not _wirkt_wie_teamname(gastteam_kandidat):
             continue
         if not status_kandidat:
+            continue
+
+        # WICHTIG: Oben auf der DEB-LIVE-Seite steht eine Leiste mit ALLEN
+        # Spielen des Spieltags, im Format "17:30 / STR / - / - / HEC"
+        # (Uhrzeit, Kuerzel, "-", "-", Kuerzel). Das ist NICHT das aktuelle
+        # Spiel, passt aber auf dasselbe Textmuster und steht vor dem
+        # eigentlichen Spielkopf. Solche Eintraege werden hier uebersprungen:
+        # echte Teamnamen sind keine Kuerzel (z.B. "STR"), und der Status
+        # ist nie nur "-".
+        if (
+            _ist_ticker_eintrag(heimteam_kandidat)
+            or _ist_ticker_eintrag(gastteam_kandidat)
+            or _ist_ticker_eintrag(status_kandidat)
+        ):
             continue
 
         ist_uhrzeit = _ist_anpfiff_uhrzeit(
