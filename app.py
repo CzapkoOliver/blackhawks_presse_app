@@ -8,7 +8,7 @@ Fuehrt alle Bausteine zusammen:
 - spielplan.py        -> naechste zwei Spiele beider Mannschaften
 - trainer_lookup.py   -> Nationalitaet/Sprache der Trainer
 - fragen_generator.py -> Pressekonferenz-Fragen per Claude API (zweisprachig bei Bedarf)
-- live_uebersetzer.py -> Live-Untertitel Englisch -> Deutsch waehrend der Pressekonferenz
+- live_uebersetzer.py -> Live-Untertitel Englisch <-> Deutsch (beide Richtungen) waehrend der Pressekonferenz
 - nachbericht_generator.py -> Druckfertiger Nachbericht (Headline, Text, O-Ton, Statistik)
 - nachbericht_docx.py      -> Export des Nachberichts als Word-Datei (.docx)
 
@@ -1489,7 +1489,7 @@ else:
         with st.container(border=True):
             st.markdown('<div id="bh-liveuebersetzer"></div>', unsafe_allow_html=True)
             bh_abschnitt_titel(BH_ICON_SPRECHBLASE, "Live-Übersetzer")
-            st.caption("Läuft während der ganzen Pressekonferenz, Englisch → Deutsch.")
+            st.caption("Läuft während der ganzen Pressekonferenz, in beide Richtungen: Englisch → Deutsch und Deutsch → Englisch.")
             live_uebersetzer.render()
 
 # ---------------------------------------------------------------------------
